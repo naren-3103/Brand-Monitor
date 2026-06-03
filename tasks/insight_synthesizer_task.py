@@ -5,7 +5,10 @@ def create_insight_synthesizer_task(
     agent,
     brand,
     user_prompt,
-    verified_metrics=None
+    verified_metrics=None,
+    specialist_outputs: dict = None,
+    critic_feedback: str = None,
+    iteration: int = 1,
 ):
 
     if verified_metrics is None:
@@ -55,6 +58,52 @@ Total competitor news:  {_vm.get('competitor_total_news', 0):,}
 High-impact threats:    {_vm.get('competitor_high_impact_count', 0):,}
 Opportunities:          {_vm.get('competitor_opportunity_count', 0):,}"""
 
+    # ── Specialist outputs block ──────────────────────────────────────────────
+    _specialist_block = ""
+    if specialist_outputs:
+        parts = []
+        label_map = {
+            'social':     'Social Listening Agent',
+            'search':     'Search Trend Agent',
+            'review':     'Review Theme Agent',
+            'competitor': 'Competitor Monitoring Agent',
+        }
+        for key, label in label_map.items():
+            text = (specialist_outputs.get(key) or "").strip()
+            if text:
+                parts.append(f"### {label}\n{text}")
+        if parts:
+            _specialist_block = (
+                "\n==================================================\n"
+                "SPECIALIST AGENT EVIDENCE CARDS\n"
+                "==================================================\n\n"
+                + "\n\n".join(parts)
+            )
+
+    # ── Critic feedback block (only for iteration 2+) ─────────────────────────
+    _critic_block = ""
+    if critic_feedback and iteration > 1:
+        _critic_block = f"""
+==================================================
+CRITIC QA FEEDBACK FROM ITERATION {iteration - 1} — MANDATORY TO ADDRESS
+==================================================
+
+{critic_feedback}
+
+MANDATORY INSTRUCTIONS FOR THIS REVISION:
+- Address EVERY issue listed in "### Issues Found" above.
+- For each corrected item, show the exact verified number.
+- Do NOT repeat errors from the previous iteration.
+- This is revision {iteration} — your score must improve.
+==================================================
+"""
+
+    _task_header = (
+        f"REVISION {iteration} — Address all critic issues and produce an improved report."
+        if iteration > 1
+        else "Create a final executive brand-health report."
+    )
+
     return Task(
 
         description=f"""
@@ -72,22 +121,13 @@ recompute any of these values. If a number appears below, use it as-is.
 {_review_block}
 {_search_block}
 {_competitor_block}
-
-==================================================
-SOURCE EVIDENCE CARDS
-==================================================
-
-You have received specialist evidence cards from:
-- Social Listening Agent  (includes ### Key Strengths section)
-- Search Trend Agent      (includes ### Key Strengths section)
-- Review Theme Agent      (includes ### Key Strengths section)
-- Competitor Monitoring Agent (includes ### Key Strengths section)
-
+{_specialist_block}
+{_critic_block}
 ==================================================
 YOUR TASK
 ==================================================
 
-Create a final executive brand-health report.
+{_task_header}
 
 Include:
 

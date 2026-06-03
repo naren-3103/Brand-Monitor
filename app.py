@@ -907,7 +907,7 @@ with tab6:
 
                 if is_relevant:
 
-                    with st.spinner("📊 Running 6-Agent Brand Health Analysis..."):
+                    with st.spinner("📊 Running 6-Agent Brand Health Analysis with Feedback Loop..."):
 
                         try:
 
@@ -921,7 +921,11 @@ with tab6:
 
                                 start_date=timeframe.get('effective_start'),
 
-                                end_date=timeframe.get('effective_end')
+                                end_date=timeframe.get('effective_end'),
+
+                                max_feedback_iterations=3,
+
+                                quality_threshold=7.5,
 
                             )
 
@@ -958,6 +962,9 @@ with tab6:
                                 ai_answer = crew_result.get("qa_review") or crew_result["final_report"]
                                 executive_report = crew_result.get("executive_report", "")
                                 tf_label = _timeframe_label(timeframe)
+                                _fb = crew_result.get("feedback_loop", {})
+                                # Store last feedback loop result in session state for Observability tab
+                                st.session_state['last_feedback_loop'] = _fb
 
 
 
@@ -1052,147 +1059,99 @@ Please ensure all data files are present in the 'data/' directory.
 
 with tab7:
 
+    st.header("⚡ Agent Observability — Feedback Loop")
+
+    fb = st.session_state.get('last_feedback_loop', {})
+
+    if not fb:
+        st.info(
+            "No analysis run yet. Ask a question in the **Ask AI** tab to see "
+            "the feedback loop in action."
+        )
+    else:
+        iterations    = fb.get('iteration_history', [])
+        final_score   = fb.get('score_progression', [])[-1] if fb.get('score_progression') else 0
+        converged     = fb.get('converged', False)
+        threshold     = fb.get('quality_threshold', 7.5)
+        num_iters     = fb.get('iterations', len(iterations))
+
+        # ── Summary banner ────────────────────────────────────────────────────
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("Final Quality Score", f"{final_score:.1f} / 10")
+        with col_b:
+            st.metric("Iterations Used", f"{num_iters}")
+        with col_c:
+            status_label = f"✅ Converged (≥ {threshold})" if converged else f"⚠️ Max iterations reached"
+            st.metric("Loop Status", status_label)
+
+        st.markdown("---")
+
+        # ── Score progression chart ───────────────────────────────────────────
+        if len(fb.get('score_progression', [])) > 1:
+            fig_scores = go.Figure()
+            fig_scores.add_trace(go.Scatter(
+                x=list(range(1, num_iters + 1)),
+                y=fb['score_progression'],
+                mode='lines+markers',
+                marker=dict(size=10),
+                line=dict(color='#667eea', width=3),
+                name='Quality Score',
+            ))
+            fig_scores.add_hline(
+                y=threshold,
+                line_dash="dash",
+                line_color="green",
+                annotation_text=f"Threshold ({threshold})",
+            )
+            fig_scores.update_layout(
+                title="Quality Score Across Feedback Iterations",
+                xaxis_title="Iteration",
+                yaxis_title="Score / 10",
+                yaxis=dict(range=[0, 10]),
+                title_x=0.5,
+            )
+            st.plotly_chart(fig_scores, use_container_width=True)
+
+        # ── Per-iteration detail ──────────────────────────────────────────────
+        st.subheader("📋 Iteration-by-Iteration Detail")
+
+        for rec in iterations:
+            i         = rec['iteration']
+            score     = rec['quality_score']
+            improved  = rec.get('improved', False)
+            badge     = "🆕 First pass" if i == 1 else ("⬆️ Improved" if improved else "➡️ Same")
+
+            with st.expander(f"Iteration {i}  —  Score: {score}/10   {badge}", expanded=(i == num_iters)):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Synthesizer Output**")
+                    st.markdown(rec['synthesizer_output'])
+                with col2:
+                    st.markdown("**Critic QA Output**")
+                    st.markdown(rec['critic_output'])
+
+        # ── Pipeline architecture note ────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("""
+**Pipeline Architecture**
+
+```
+Phase 1 (run once)
+  Social Listening → Search Trend → Review Theme → Competitor Monitoring
+                                ↓
+Phase 2 — Closed Feedback Loop
+  Synthesizer ──────────────────────────────────────────┐
+      ↓                                                  │
+  Critic QA  → parse quality score                       │
+      │                                                  │
+      ├── score ≥ 7.5  →  DONE                          │
+      │                                                  │
+      └── score < 7.5  →  inject issues as feedback ────┘
+                           (up to 3 iterations)
+```
+""")
 
-
-    st.header("⚡ Agent Observability")
-
-
-
-    logs = [
-
-        {
-
-            "Agent": "Social Listening Agent",
-
-            "Latency": "1.2 sec",
-
-            "Tokens": 1200,
-
-            "Cost": "$0.002",
-
-            "Tool Calls": 2,
-
-            "Status": "Success"
-
-        },
-
-        {
-
-            "Agent": "Search Trend Agent",
-
-            "Latency": "0.8 sec",
-
-            "Tokens": 950,
-
-            "Cost": "$0.0018",
-
-            "Tool Calls": 1,
-
-            "Status": "Success"
-
-        },
-
-        {
-
-            "Agent": "Review Theme Agent",
-
-            "Latency": "1.5 sec",
-
-            "Tokens": 1400,
-
-            "Cost": "$0.0028",
-
-            "Tool Calls": 2,
-
-            "Status": "Success"
-
-        },
-
-        {
-
-            "Agent": "Competitor Agent",
-
-            "Latency": "1.0 sec",
-
-            "Tokens": 1000,
-
-            "Cost": "$0.002",
-
-            "Tool Calls": 1,
-
-            "Status": "Success"
-
-        },
-
-        {
-
-            "Agent": "Synthesizer Agent",
-
-            "Latency": "2.1 sec",
-
-            "Tokens": 2100,
-
-            "Cost": "$0.0042",
-
-            "Tool Calls": 0,
-
-            "Status": "Success"
-
-        },
-
-        {
-
-            "Agent": "Critic QA Agent",
-
-            "Latency": "0.9 sec",
-
-            "Tokens": 850,
-
-            "Cost": "$0.0017",
-
-            "Tool Calls": 0,
-
-            "Status": "Success"
-
-        }
-
-    ]
-
-
-
-    st.dataframe(logs)
-
-
-
-    st.subheader("📊 Workflow Summary")
-
-
-
-    st.success(
-
-        "✅ All agents executed successfully"
-
-    )
-
-
-
-    st.metric(
-
-        "Total Estimated Cost",
-
-        "$0.0147"
-
-    )
-
-
-
-    st.metric(
-
-        "Total Workflow Latency",
-
-        "7.5 sec"
-
-    )
 
 
 

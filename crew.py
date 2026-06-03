@@ -4,6 +4,12 @@ load_dotenv()
 import pandas as pd
 from crewai import Crew, Process
 from utils.azure_openai_client import build_azure_openai_client
+from utils.feedback_loop import (
+    FeedbackLoopResult,
+    IterationRecord,
+    parse_quality_score,
+    extract_critic_issues,
+)
 
 
 def _to_timestamp(value):
@@ -26,6 +32,7 @@ def _filter_by_week_start_date(df: pd.DataFrame, start_date, end_date):
         return df
     week_dates = pd.to_datetime(df['week_start_date'], errors='coerce')
     return df[(week_dates >= start_ts) & (week_dates <= end_ts)]
+
 
 def compute_verified_metrics(social_data, reviews_data, search_data, competitor_data) -> dict:
     """
@@ -53,7 +60,6 @@ def compute_verified_metrics(social_data, reviews_data, search_data, competitor_
             .apply(lambda x: round((x == 'positive').sum() / len(x) * 100, 1))
             .to_dict()
         )
-        # Weekly positive % for trend reporting
         m['social_weekly_positive_pct'] = (
             social_data.groupby('week')['sentiment']
             .apply(lambda x: round((x == 'positive').sum() / len(x) * 100, 1))
@@ -122,48 +128,138 @@ from tasks.insight_synthesizer_task import create_insight_synthesizer_task
 from tasks.critic_qa_task import create_critic_qa_task
 
 
+def _run_specialist_phase(
+    brand, social_data, search_data, reviews_data, competitor_data,
+    prompt_with_timeframe, verified_metrics, llm
+) -> dict:
+    """
+    Run the 4 specialist agents once. Their data analysis never changes
+    across feedback iterations, so we only pay this cost once.
+    Returns a dict with keys: social, search, review, competitor.
+    """
+    social_agent     = create_social_listening_agent(llm)
+    search_agent     = create_search_trend_agent(llm)
+    review_agent     = create_review_theme_agent(llm)
+    competitor_agent = create_competitor_monitoring_agent(llm)
+
+    social_task     = create_social_listening_task(social_agent,     social_data,     brand, prompt_with_timeframe, verified_metrics)
+    search_task     = create_search_trend_task(search_agent,         search_data,     brand, prompt_with_timeframe, verified_metrics)
+    review_task     = create_review_theme_task(review_agent,         reviews_data,    brand, prompt_with_timeframe, verified_metrics)
+    competitor_task = create_competitor_monitoring_task(competitor_agent, competitor_data, brand, prompt_with_timeframe, verified_metrics)
+
+    crew = Crew(
+        agents=[social_agent, search_agent, review_agent, competitor_agent],
+        tasks=[social_task, search_task, review_task, competitor_task],
+        process=Process.sequential,
+        verbose=True,
+    )
+    result = crew.kickoff()
+
+    outputs = getattr(result, 'tasks_output', [])
+    return {
+        'social':     outputs[0].raw if len(outputs) > 0 else "",
+        'search':     outputs[1].raw if len(outputs) > 1 else "",
+        'review':     outputs[2].raw if len(outputs) > 2 else "",
+        'competitor': outputs[3].raw if len(outputs) > 3 else "",
+    }
+
+
+def _run_synthesis_iteration(
+    brand, user_prompt, verified_metrics,
+    specialist_outputs: dict,
+    social_data, reviews_data, search_data,
+    llm,
+    iteration: int,
+    max_iterations: int,
+    critic_feedback: str = None,
+) -> tuple:
+    """
+    Run one Synthesizer → Critic cycle.
+    Returns (synthesizer_raw, critic_raw, quality_score).
+    """
+    synthesizer_agent = create_insight_synthesizer_agent(llm)
+    critic_agent      = create_critic_qa_agent(llm)
+
+    synthesizer_task = create_insight_synthesizer_task(
+        synthesizer_agent,
+        brand,
+        user_prompt,
+        verified_metrics,
+        specialist_outputs=specialist_outputs,
+        critic_feedback=critic_feedback,
+        iteration=iteration,
+    )
+
+    critic_task = create_critic_qa_task(
+        critic_agent,
+        brand,
+        user_prompt,
+        social_data=social_data,
+        review_data=reviews_data,
+        search_data=search_data,
+        iteration=iteration,
+        max_iterations=max_iterations,
+    )
+    critic_task.context = [synthesizer_task]
+
+    crew = Crew(
+        agents=[synthesizer_agent, critic_agent],
+        tasks=[synthesizer_task, critic_task],
+        process=Process.sequential,
+        verbose=True,
+    )
+    result = crew.kickoff()
+
+    outputs = getattr(result, 'tasks_output', [])
+    synthesizer_raw = outputs[0].raw if len(outputs) >= 1 else ""
+    critic_raw      = outputs[1].raw if len(outputs) >= 2 else str(result)
+    quality_score   = parse_quality_score(critic_raw)
+
+    return synthesizer_raw, critic_raw, quality_score
+
+
 def run_brand_health_crew(
     brand: str,
     user_prompt: str,
     llm=None,
     start_date=None,
     end_date=None,
+    max_feedback_iterations: int = 3,
+    quality_threshold: float = 7.5,
 ):
     """
-    Run the complete 6-agent brand health monitoring crew.
-    
-    Args:
-        brand: Brand name (e.g., "Lay's")
-        user_prompt: User's question/request
-        llm: Optional LLM instance (uses Azure OpenAI from .env if None)
-        start_date: Optional start date for timeframe filtering
-        end_date: Optional end date for timeframe filtering
-    
-    Returns:
-        dict with all analysis results
+    Run the complete brand health monitoring pipeline with a closed feedback loop.
+
+    Phase 1 — Specialist agents (run once):
+      Social Listening → Search Trend → Review Theme → Competitor Monitoring
+
+    Phase 2 — Feedback loop (up to max_feedback_iterations):
+      Synthesizer → Critic QA → parse quality score
+        if score < quality_threshold: inject critic issues back → re-synthesize
+        if score >= quality_threshold OR max iterations reached: exit
+
+    Returns a dict that includes iteration_history for the Observability tab.
     """
-    
+
     print("📊 Loading data...")
-    
-    # Load all data
-    social_df = pd.read_csv('data/social_posts.csv')
-    search_df = pd.read_csv('data/search_trends.csv')
-    reviews_df = pd.read_csv('data/reviews.csv')
+
+    social_df     = pd.read_csv('data/social_posts.csv')
+    search_df     = pd.read_csv('data/search_trends.csv')
+    reviews_df    = pd.read_csv('data/reviews.csv')
     competitor_df = pd.read_csv('data/competitor_news.csv')
-    
-    # Filter for the brand
-    social_data = social_df[social_df['brand_mentioned'] == brand]
-    search_data = search_df[search_df['brand'] == brand]
-    reviews_data = reviews_df[reviews_df['brand'] == brand]
+
+    social_data     = social_df[social_df['brand_mentioned'] == brand]
+    search_data     = search_df[search_df['brand'] == brand]
+    reviews_data    = reviews_df[reviews_df['brand'] == brand]
     competitor_data = competitor_df
-    
+
     timeframe_note = ""
     if start_date is not None and end_date is not None:
-        social_data = _filter_by_week_start_date(social_data, start_date, end_date)
-        search_data = _filter_by_week_start_date(search_data, start_date, end_date)
-        reviews_data = _filter_by_week_start_date(reviews_data, start_date, end_date)
+        social_data     = _filter_by_week_start_date(social_data,     start_date, end_date)
+        search_data     = _filter_by_week_start_date(search_data,     start_date, end_date)
+        reviews_data    = _filter_by_week_start_date(reviews_data,    start_date, end_date)
         competitor_data = _filter_by_week_start_date(competitor_data, start_date, end_date)
-        timeframe_note = (
+        timeframe_note  = (
             f"Timeframe: analyze only data from {start_date:%Y-%m-%d} "
             f"to {end_date:%Y-%m-%d}."
         )
@@ -173,122 +269,125 @@ def run_brand_health_crew(
     print(f"   - {len(search_data):,} search trends")
     print(f"   - {len(reviews_data):,} reviews")
     print(f"   - {len(competitor_data):,} competitor news items")
-    
-    # Create all 6 agents
-    print("\n🤖 Creating agents...")
-    
+
     if llm is None:
         llm = build_azure_openai_client()
-    
-    social_agent = create_social_listening_agent(llm)
-    search_agent = create_search_trend_agent(llm)
-    review_agent = create_review_theme_agent(llm)
-    competitor_agent = create_competitor_monitoring_agent(llm)
-    synthesizer_agent = create_insight_synthesizer_agent(llm)
-    critic_agent = create_critic_qa_agent(llm)
-    
-    print("✅ All 6 agents created")
-    
-    # Create all tasks
-    print("\n📋 Creating tasks...")
-    
+
     prompt_with_timeframe = user_prompt
     if timeframe_note:
         prompt_with_timeframe = f"{user_prompt}\n\n{timeframe_note}"
 
-    # Compute all key metrics once in Python — agents use these exact numbers
-    verified_metrics = compute_verified_metrics(social_data, reviews_data, search_data, competitor_data)
-
-    social_task = create_social_listening_task(social_agent, social_data, brand, prompt_with_timeframe, verified_metrics)
-    search_task = create_search_trend_task(search_agent, search_data, brand, prompt_with_timeframe, verified_metrics)
-    review_task = create_review_theme_task(review_agent, reviews_data, brand, prompt_with_timeframe, verified_metrics)
-    competitor_task = create_competitor_monitoring_task(competitor_agent, competitor_data, brand, prompt_with_timeframe, verified_metrics)
-
-    # Synthesizer gets context from all previous tasks + the same verified metrics
-    synthesizer_task = create_insight_synthesizer_task(synthesizer_agent, brand, user_prompt, verified_metrics)
-    synthesizer_task.context = [social_task, search_task, review_task, competitor_task]
-    
-    # Critic reviews the synthesizer's output
-    critic_task = create_critic_qa_task(
-        critic_agent,
-        brand,
-        user_prompt,
-        social_data=social_data,
-        review_data=reviews_data,
-        search_data=search_data
+    verified_metrics = compute_verified_metrics(
+        social_data, reviews_data, search_data, competitor_data
     )
-    critic_task.context = [synthesizer_task]
-    
-    print("✅ All tasks created")
-    
-    # Build the crew
-    print("\n🚀 Building crew pipeline...")
-    
-    crew = Crew(
-        agents=[
-            social_agent,
-            search_agent,
-            review_agent,
-            competitor_agent,
-            synthesizer_agent,
-            critic_agent
-        ],
-        tasks=[
-            social_task,
-            search_task,
-            review_task,
-            competitor_task,
-            synthesizer_task,
-            critic_task
-        ],
-        process=Process.sequential,  # Run agents one after another
-        verbose=True
+
+    # ── Phase 1: Specialist agents (run once) ─────────────────────────────────
+    print("\n" + "=" * 70)
+    print("🔍 PHASE 1 — SPECIALIST AGENTS (run once)")
+    print("=" * 70)
+
+    specialist_outputs = _run_specialist_phase(
+        brand, social_data, search_data, reviews_data, competitor_data,
+        prompt_with_timeframe, verified_metrics, llm,
     )
-    
-    print("✅ Crew ready\n")
+
+    # ── Phase 2: Synthesizer → Critic feedback loop ───────────────────────────
+    print("\n" + "=" * 70)
+    print("🔄 PHASE 2 — SYNTHESIZER ↔ CRITIC FEEDBACK LOOP")
+    print(f"   Max iterations: {max_feedback_iterations}  |  Quality threshold: {quality_threshold}/10")
     print("=" * 70)
-    print("🔥 STARTING 6-AGENT BRAND HEALTH ANALYSIS")
-    print("=" * 70)
-    
-    # Run the crew!
-    result = crew.kickoff()
+
+    loop_result = FeedbackLoopResult()
+    critic_feedback = None  # None on first iteration
+
+    for iteration in range(1, max_feedback_iterations + 1):
+        print(f"\n🔁 Feedback Loop — Iteration {iteration}/{max_feedback_iterations}")
+
+        synthesizer_raw, critic_raw, quality_score = _run_synthesis_iteration(
+            brand=brand,
+            user_prompt=user_prompt,
+            verified_metrics=verified_metrics,
+            specialist_outputs=specialist_outputs,
+            social_data=social_data,
+            reviews_data=reviews_data,
+            search_data=search_data,
+            llm=llm,
+            iteration=iteration,
+            max_iterations=max_feedback_iterations,
+            critic_feedback=critic_feedback,
+        )
+
+        record = IterationRecord(
+            iteration=iteration,
+            synthesizer_output=synthesizer_raw,
+            critic_output=critic_raw,
+            quality_score=quality_score,
+        )
+        loop_result.append(record)
+
+        print(f"   ✅ Quality score: {quality_score}/10")
+
+        if quality_score >= quality_threshold:
+            loop_result.converged = True
+            print(f"   🎯 Quality threshold reached ({quality_score} >= {quality_threshold}) — stopping loop")
+            break
+
+        if iteration < max_feedback_iterations:
+            critic_feedback = extract_critic_issues(critic_raw)
+            print(f"   ↩️  Score below threshold — running revision {iteration + 1}")
+        else:
+            print(f"   ⚠️  Max iterations reached — using best result")
 
     print("\n" + "=" * 70)
-    print("✅ ANALYSIS COMPLETE")
+    print(f"✅ FEEDBACK LOOP COMPLETE  |  Final score: {loop_result.final_score}/10  "
+          f"|  Iterations: {len(loop_result.iterations)}")
     print("=" * 70)
 
-    # Extract individual task outputs so the full executive report is visible
-    # alongside the QA review — not just the critic's output alone.
-    tasks_output = getattr(result, 'tasks_output', None) or []
-    synthesizer_raw = tasks_output[-2].raw if len(tasks_output) >= 2 else ""
-    critic_raw = tasks_output[-1].raw if len(tasks_output) >= 1 else str(result)
+    synthesizer_raw = loop_result.final_synthesizer
+    critic_raw      = loop_result.final_critic
 
     if synthesizer_raw and critic_raw:
         final_report = synthesizer_raw + "\n\n---\n\n" + critic_raw
     else:
-        final_report = str(result)
+        final_report = synthesizer_raw or critic_raw
 
     return {
-        "brand": brand,
-        "prompt": user_prompt,
-        "final_report": final_report,
+        "brand":            brand,
+        "prompt":           user_prompt,
+        "final_report":     final_report,
         "executive_report": synthesizer_raw,
-        "qa_review": critic_raw,
+        "qa_review":        critic_raw,
         "data_summary": {
-            "social_posts": len(social_data),
-            "search_trends": len(search_data),
-            "reviews": len(reviews_data),
-            "competitor_news": len(competitor_data)
-        }
+            "social_posts":    len(social_data),
+            "search_trends":   len(search_data),
+            "reviews":         len(reviews_data),
+            "competitor_news": len(competitor_data),
+        },
+        "feedback_loop": {
+            "iterations":         len(loop_result.iterations),
+            "converged":          loop_result.converged,
+            "quality_threshold":  quality_threshold,
+            "score_progression":  loop_result.score_progression(),
+            "iteration_history":  [
+                {
+                    "iteration":          r.iteration,
+                    "quality_score":      r.quality_score,
+                    "improved":           r.improved,
+                    "synthesizer_output": r.synthesizer_output,
+                    "critic_output":      r.critic_output,
+                }
+                for r in loop_result.iterations
+            ],
+        },
     }
 
 
 if __name__ == "__main__":
-    # Test the crew
     result = run_brand_health_crew(
         brand="Lay's",
         user_prompt="How is Lay's brand health overall? What are the top 3 priorities for the next quarter?"
     )
-    
+
     print("\n📊 FINAL BRAND HEALTH REPORT:\n")
     print(result["final_report"])
+    print(f"\n📈 Score progression: {result['feedback_loop']['score_progression']}")

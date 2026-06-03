@@ -8,7 +8,9 @@ def create_critic_qa_task(
     user_prompt,
     social_data=None,
     review_data=None,
-    search_data=None
+    search_data=None,
+    iteration: int = 1,
+    max_iterations: int = 3,
 ):
     # ── Social metrics ────────────────────────────────────────────────────────
     if social_data is not None and len(social_data) > 0:
@@ -93,6 +95,16 @@ def create_critic_qa_task(
         search_growth_pct=search_growth_pct
     )
 
+    _iteration_note = (
+        f"This is **iteration {iteration} of {max_iterations}** in the feedback loop. "
+        + (
+            "This is the first pass — score honestly and list all issues clearly so the synthesizer can fix them."
+            if iteration == 1
+            else f"The synthesizer has revised the report based on your iteration {iteration - 1} feedback. "
+                 "Check whether the previous issues were addressed. Score accordingly."
+        )
+    )
+
     return Task(
 
         description=f"""
@@ -100,6 +112,9 @@ You are the QA reviewer for the brand health analysis of **{brand}**.
 
 USER QUERY:
 "{user_prompt}"
+
+FEEDBACK LOOP STATUS: {_iteration_note}
+
 
 ==================================================
 METRIC DEFINITIONS  (read before validating)
@@ -226,10 +241,17 @@ Quote the conflicting claims and state which verified figure resolves them.
 
 ### Executive QA Summary
 
+### Feedback for Next Iteration
+List only the specific corrections the synthesizer must make in the next revision.
+Omit this section entirely if quality score >= 7.5 (no further revision needed).
+Format each item as:
+- MUST FIX: [exact quoted error] → [what the correct statement should say]
+
         """,
 
         expected_output=(
-            "QA report with contradictions, quality score, and corrections."
+            "QA report with quality score, issues found, contradictions, "
+            "executive summary, and feedback for next iteration."
         ),
 
         agent=agent,
