@@ -1,42 +1,69 @@
 # Lay's Brand Health Monitor
 
-A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers weekly brand health analysis across social media, search trends, customer reviews, and competitor activity.
+A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers weekly brand health analysis across social media, search trends, customer reviews, and competitor activity — with a **closed feedback loop** that iteratively improves report quality until a quality threshold is met.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Streamlit App                       │
-│  (Dashboards · KPI Cards · Ask AI · Agent Observability)│
-└───────────────────────┬─────────────────────────────────┘
-                        │ user question
-                        ▼
-              ┌─────────────────┐
-              │ Relevance Check │  (rejects off-topic queries)
-              └────────┬────────┘
-                       │
-          ┌────────────┼─────────────┬────────────┐
-          ▼            ▼             ▼             ▼
-  ┌──────────────┐ ┌──────────┐ ┌────────┐ ┌────────────┐
-  │Social Listen.│ │  Search  │ │ Review │ │ Competitor │
-  │    Agent     │ │  Trend   │ │ Theme  │ │ Monitoring │
-  │              │ │  Agent   │ │ Agent  │ │   Agent    │
-  └──────┬───────┘ └────┬─────┘ └───┬────┘ └─────┬──────┘
-         │              │           │             │
-         └──────────────┴─────┬─────┴─────────────┘
-                               ▼
-                  ┌────────────────────────┐
-                  │  Insight Synthesizer   │
-                  │  (Chief Brand Strat.)  │
-                  └────────────┬───────────┘
-                               ▼
-                  ┌────────────────────────┐
-                  │     Critic QA Agent    │
-                  │  (Executive Reviewer)  │
-                  └────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                       Streamlit App                         │
+│   Dashboards · KPI Cards · Ask AI · Agent Observability     │
+└─────────────────────────┬───────────────────────────────────┘
+                          │ user question
+                          ▼
+                ┌─────────────────┐
+                │ Relevance Check │  rejects off-topic queries
+                └────────┬────────┘
+                         │
+        ╔════════════════╪═════════════════════════╗
+        ║        PHASE 1 — Specialist Agents        ║
+        ║              (runs once)                  ║
+        ╠═══════════╦═══════════╦════════╦══════════╣
+        ║  Social   ║  Search   ║ Review ║Competitor║
+        ║ Listening ║   Trend   ║ Theme  ║Monitoring║
+        ║   Agent   ║   Agent   ║ Agent  ║  Agent   ║
+        ╚═════╤═════╩═════╤═════╩════╤═══╩═════╤════╝
+              │           │          │          │
+              └───────────┴────┬─────┴──────────┘
+                               │  specialist evidence cards
+        ╔══════════════════════╪══════════════════════════════╗
+        ║       PHASE 2 — Closed Feedback Loop                ║
+        ║         (up to 3 iterations)                        ║
+        ║                      ▼                              ║
+        ║       ┌──────────────────────────┐                  ║
+        ║       │   Insight Synthesizer    │◄─────────────┐   ║
+        ║       │  (Chief Brand Strat.)    │              │   ║
+        ║       └──────────────┬───────────┘              │   ║
+        ║                      ▼                          │   ║
+        ║       ┌──────────────────────────┐              │   ║
+        ║       │      Critic QA Agent     │              │   ║
+        ║       │  (Executive Reviewer)    │              │   ║
+        ║       └──────────────┬───────────┘              │   ║
+        ║                      │                          │   ║
+        ║          ┌───────────┴───────────┐              │   ║
+        ║          │  quality score ≥ 7.5? │              │   ║
+        ║          └───────┬───────────────┘              │   ║
+        ║               YES│              NO               │   ║
+        ║                  ▼               └──inject issues┘   ║
+        ║           FINAL REPORT                               ║
+        ╚══════════════════════════════════════════════════════╝
 ```
+
+---
+
+## How the Feedback Loop Works
+
+| Step | What happens |
+|------|-------------|
+| **Phase 1** | The 4 specialist agents run once and produce evidence cards. Their data analysis is deterministic — they never re-run. |
+| **Iteration 1** | The Synthesizer compiles all 4 evidence cards into an executive report. The Critic QA agent validates it and assigns a quality score out of 10. |
+| **Score check** | If the score is **≥ 7.5**, the loop exits immediately and the report is returned. |
+| **Iteration 2+** | If the score is below threshold, the Critic's `Issues Found` and `Feedback for Next Iteration` sections are extracted and injected directly into the Synthesizer's next prompt as mandatory fixes. |
+| **Exit condition** | Loop stops when score ≥ 7.5 **or** 3 iterations have run — whichever comes first. |
+
+The result object includes the full `iteration_history` (score per iteration, synthesizer output, critic output) which is surfaced in the **Agent Observability** tab.
 
 ---
 
@@ -45,14 +72,28 @@ A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers 
 ```
 brand_monitor_pipeline/
 ├── app.py                  # Streamlit entry point
-├── crew.py                 # CrewAI orchestration (run_brand_health_crew)
+├── crew.py                 # CrewAI orchestration — specialist phase + feedback loop
 ├── requirements.txt        # Pinned production dependencies
 ├── requirements-dev.txt    # Dev/test dependencies
 ├── Makefile                # Common commands (run, test, lint, format)
 ├── .env.example            # Environment variable template
 │
 ├── agents/                 # One file per specialist agent
+│   ├── social_listening_agent.py
+│   ├── search_trend_agent.py
+│   ├── review_theme_agent.py
+│   ├── competitor_monitoring_agent.py
+│   ├── insight_synthesizer_agent.py
+│   └── critic_qa_agent.py
+│
 ├── tasks/                  # One file per agent task (prompts + data prep)
+│   ├── social_listening_task.py
+│   ├── search_trend_task.py
+│   ├── review_theme_task.py
+│   ├── competitor_monitoring_task.py
+│   ├── insight_synthesizer_task.py   # accepts critic_feedback for revisions
+│   ├── critic_qa_task.py             # outputs structured Feedback for Next Iteration
+│   └── relevance_checker.py
 │
 ├── config/
 │   └── settings.py         # All thresholds, paths, and constants
@@ -62,6 +103,7 @@ brand_monitor_pipeline/
 │   ├── azure_openai_client.py
 │   ├── contradiction_checker.py
 │   ├── evidence_card.py
+│   ├── feedback_loop.py              # parse_quality_score, FeedbackLoopResult
 │   ├── observability.py
 │   └── timeframe_utils.py
 │
@@ -81,7 +123,7 @@ brand_monitor_pipeline/
 ```bash
 python -m venv venv
 # Windows
-venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 # macOS / Linux
 source venv/bin/activate
 ```
@@ -156,6 +198,23 @@ All tuneable values are in [`config/settings.py`](config/settings.py):
 | `COMPETITOR_HIGH_IMPACT_THRESHOLD` | `-0.05` | Sentiment impact threshold for threats |
 | `COMPETITOR_OPPORTUNITY_THRESHOLD` | `+0.05` | Sentiment impact threshold for opportunities |
 | `CREW_VERBOSE` | `True` | Show per-agent reasoning in console |
+
+Feedback loop parameters are passed directly to `run_brand_health_crew()`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_feedback_iterations` | `3` | Maximum Synthesizer → Critic cycles |
+| `quality_threshold` | `7.5` | Score out of 10 at which the loop exits early |
+
+---
+
+## Agent Observability
+
+The **Agent Observability** tab in the Streamlit app shows live feedback loop data after each analysis run:
+
+- **Quality score per iteration** — plotted as a line chart with the threshold marked
+- **Per-iteration detail** — expandable panels showing the Synthesizer output and Critic QA report side by side
+- **Loop status** — whether the run converged (hit threshold) or exhausted max iterations
 
 ---
 
