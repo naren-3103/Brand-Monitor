@@ -1,5 +1,6 @@
 from crewai import Task
 from utils.contradiction_checker import detect_contradictions
+from utils.critic_models import CriticQAOutput
 
 
 def create_critic_qa_task(
@@ -217,42 +218,80 @@ CONTRADICTIONS DETECTED  (system-verified)
 {contradictions if contradictions else "No contradictions detected"}
 
 ==================================================
-FINAL OUTPUT FORMAT
+SCORING RUBRIC  (score each dimension 0 – 2, then sum for total out of 10)
 ==================================================
 
-## Critic QA Agent
+DIMENSION 1 — FACTUAL ACCURACY  (field: factual_accuracy)
+  2 = Every cited number matches verified data exactly (rounding ≤ 0.5 is fine)
+  1 = Exactly one rounding difference; no material errors
+  0 = One or more numbers differ materially from the verified data above
 
-### Quality Score
-Give score out of 10.
+DIMENSION 2 — CLAIM SUPPORT  (field: claim_support)
+  2 = Every claim in the analysis references a specific metric or evidence card
+  1 = 1-2 claims are asserted without any data reference
+  0 = Three or more unsupported claims, OR the core conclusion lacks evidence
 
-### Strengths
-Cite exact metrics from the analysis that are correct and well-supported.
-- Strength 1 — quote the metric and state why it checks out
-- Strength 2 — quote the metric and state why it checks out
+DIMENSION 3 — CONTRADICTION HANDLING  (field: contradiction_handling)
+  2 = No real contradictions; any cross-channel tension explicitly reconciled
+  1 = Minor tension present but not directly addressed
+  0 = A clear contradiction (see CONTRADICTIONS DETECTED above) is not resolved
 
-### Issues Found
-Each issue MUST quote the exact claim AND state the correct verified value.
-Format: "Stated: '[quoted claim]' — Correct: [verified number]"
-- Issue 1
-- Issue 2
+DIMENSION 4 — RECOMMENDATION QUALITY  (field: recommendation_quality)
+  2 = Every recommended action is specific, prioritised, and tied to a named metric
+  1 = Recommendations are present but generic or not tied to a specific metric
+  0 = Vague actions with no metric connection, or no recommendations at all
 
-### Contradictions
-Quote the conflicting claims and state which verified figure resolves them.
+DIMENSION 5 — EXECUTIVE COMPLETENESS  (field: executive_completeness)
+  2 = All required sections present; user query directly and fully answered
+  1 = One section missing, OR user query only partially answered
+  0 = Two or more sections missing, OR user query ignored
 
-### Executive QA Summary
+CALIBRATION ANCHORS — apply these strictly to prevent score inflation:
+   2/10  Multiple factual errors, vague or missing recommendations
+   5/10  Some factual errors or unsupported claims, generic recommendations
+   7/10  Factually accurate but recommendations not tied to specific metrics
+   9/10  Accurate numbers, specific metric-tied recs, contradictions resolved, query answered
+  10/10  Truly flawless — perfect on every dimension — extremely rare
 
-### Feedback for Next Iteration
-List only the specific corrections the synthesizer must make in the next revision.
-Omit this section entirely if quality score >= 7.5 (no further revision needed).
-Format each item as:
-- MUST FIX: [exact quoted error] → [what the correct statement should say]
+TOTAL = D1 + D2 + D3 + D4 + D5  (max 10)
+
+==================================================
+OUTPUT FIELD INSTRUCTIONS
+==================================================
+
+scores:
+  Fill each of the five dimension fields with 0, 1, or 2 per the rubric above.
+  The total is the sum.
+
+strengths:
+  List bullets. Each MUST quote the exact metric and explain why it checks out.
+  Example: "Positive sentiment stated as 55.5% — matches verified value exactly."
+
+issues:
+  List bullets. Each MUST quote the exact claim AND state the correct verified value.
+  Format: "Stated: '[quoted claim]' — Correct: [verified number from live data]"
+  Leave empty list [] if no issues.
+
+contradictions:
+  List bullets quoting conflicting claims and stating which verified figure resolves them.
+  Leave empty list [] if no contradictions.
+
+executive_summary:
+  2-3 sentence executive assessment of overall report quality.
+
+feedback_for_next_iteration:
+  If factual_accuracy < 2 OR total < 7: list specific corrections in this format:
+    "MUST FIX: [exact quoted error] → [what the correct statement should say]"
+  Leave empty list [] if factual_accuracy == 2 AND total >= 7 (no revision needed).
 
         """,
 
         expected_output=(
-            "QA report with quality score, issues found, contradictions, "
-            "executive summary, and feedback for next iteration."
+            "JSON matching CriticQAOutput: dimension scores (0-2 each, max 10 total), "
+            "issues list quoting exact claimed vs. verified values, "
+            "and feedback_for_next_iteration empty when quality is sufficient."
         ),
 
+        output_pydantic=CriticQAOutput,
         agent=agent,
     )

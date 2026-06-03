@@ -355,3 +355,198 @@ def format_timeframe_label(parsed: Dict[str, Optional[object]]) -> str:
 
 def format_date_availability(available_start: date, available_end: date) -> str:
     return f"{format_date(available_start)} to {format_date(available_end)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Comparison query support
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COMPARISON_PATTERNS = [
+    r'\bcompare\b',
+    r'\bvs\.?\b',
+    r'\bversus\b',
+    r'\bcompared\s+to\b',
+    r'\bcompared\s+with\b',
+    r'\bdifference\s+between\b',
+    r'\bchanged?\s+between\b',
+    r'\bbetween\b',
+    r'\bhow\s+.{0,40}compare\b',
+    r'\bcontrast\b',
+    r'\brelative\s+to\b',
+    r'\bagainst\b',
+]
+
+
+def is_comparison_query(text: str) -> bool:
+    """Return True if the question is asking for a period-over-period comparison."""
+    tl = text.lower()
+    return any(re.search(p, tl) for p in _COMPARISON_PATTERNS)
+
+
+def _add_relative_periods(text: str, today: date, raw: list) -> None:
+    """Append relative time periods (this week, last month, …) to *raw*."""
+    def _last_month():
+        m = today.month - 1 or 12
+        y = today.year - (1 if today.month == 1 else 0)
+        return date(y, m, 1), date(y, m, calendar.monthrange(y, m)[1]), 'Last Month'
+
+    def _last_quarter():
+        q = (today.month - 1) // 3          # 0-based current quarter
+        if q == 0:
+            q, y = 4, today.year - 1
+        else:
+            q, y = q, today.year
+        sm = 3 * (q - 1) + 1
+        em = sm + 2
+        return date(y, sm, 1), date(y, em, calendar.monthrange(y, em)[1]), f'Q{q} {y}'
+
+    candidates = [
+        ('this week',       today - timedelta(days=6),  today,                          'This Week'),
+        ('last week',       today - timedelta(days=13), today - timedelta(days=7),      'Last Week'),
+        ('previous week',   today - timedelta(days=13), today - timedelta(days=7),      'Last Week'),
+        ('this month',      date(today.year, today.month, 1),
+                            date(today.year, today.month, calendar.monthrange(today.year, today.month)[1]),
+                            'This Month'),
+        ('this year',       date(today.year, 1, 1),     date(today.year, 12, 31),       str(today.year)),
+        ('last year',       date(today.year-1, 1, 1),   date(today.year-1, 12, 31),     str(today.year-1)),
+        ('previous year',   date(today.year-1, 1, 1),   date(today.year-1, 12, 31),     str(today.year-1)),
+    ]
+
+    # last month / previous month (computed dynamically)
+    lm_s, lm_e, lm_l = _last_month()
+    candidates += [
+        ('last month',      lm_s, lm_e, lm_l),
+        ('previous month',  lm_s, lm_e, lm_l),
+    ]
+
+    # last quarter / previous quarter
+    lq_s, lq_e, lq_l = _last_quarter()
+    candidates += [
+        ('last quarter',     lq_s, lq_e, lq_l),
+        ('previous quarter', lq_s, lq_e, lq_l),
+    ]
+
+    # this quarter
+    cq = (today.month - 1) // 3 + 1
+    cqsm = 3 * (cq - 1) + 1
+    cqem = cqsm + 2
+    candidates.append((
+        'this quarter',
+        date(today.year, cqsm, 1),
+        date(today.year, cqem, calendar.monthrange(today.year, cqem)[1]),
+        f'Q{cq} {today.year}',
+    ))
+
+    added_labels: set = set()
+    for phrase, s, e, label in candidates:
+        if phrase in text and label not in added_labels:
+            raw.append((s, e, label))
+            added_labels.add(label)
+
+
+def _extract_periods_from_text(
+    text: str, available_start: date, available_end: date
+) -> list:
+    """
+    Extract every distinct time-period reference in *text* and return them as
+    a list of dicts sorted by start date (oldest first = period_a / baseline).
+    """
+    today = date.today()
+    raw: list = []          # (start, end, label)
+    claimed_years: set = set()
+
+    # 1. Quarters: "q1 2026", "q2 2025"
+    for m in re.finditer(r'\bq([1-4])\s*(20\d{2})\b', text):
+        q, year = int(m.group(1)), int(m.group(2))
+        sm = 3 * (q - 1) + 1
+        em = sm + 2
+        raw.append((
+            date(year, sm, 1),
+            date(year, em, calendar.monthrange(year, em)[1]),
+            f'Q{q} {year}',
+        ))
+        claimed_years.add(year)
+
+    # 2. Month + year: "may 2026", "april 2026"
+    for m in re.finditer(r'\b(' + '|'.join(MONTHS.keys()) + r')\s+(20\d{2})\b', text):
+        month_num = MONTHS[m.group(1)]
+        year = int(m.group(2))
+        raw.append((
+            date(year, month_num, 1),
+            date(year, month_num, calendar.monthrange(year, month_num)[1]),
+            f'{m.group(1).title()} {year}',
+        ))
+        claimed_years.add(year)
+
+    # 3. Relative terms (this week / last month / etc.)
+    _add_relative_periods(text, today, raw)
+
+    # 4. Year-only ("2025", "2026") — only for years not already covered above
+    for m in re.finditer(r'\b(20\d{2})\b', text):
+        year = int(m.group(1))
+        if year not in claimed_years:
+            raw.append((date(year, 1, 1), date(year, 12, 31), str(year)))
+            claimed_years.add(year)
+
+    # Deduplicate by (start, end) keeping first occurrence
+    seen: set = set()
+    unique: list = []
+    for s, e, label in raw:
+        key = (s, e)
+        if key not in seen:
+            seen.add(key)
+            unique.append((s, e, label))
+
+    # Build result dicts, sorted oldest → newest
+    result = []
+    for s, e, label in sorted(unique, key=lambda x: x[0]):
+        eff_s = max(s, available_start)
+        eff_e = min(e, available_end)
+        has_data = eff_s <= eff_e
+        result.append({
+            'label':            label,
+            'start':            s,
+            'end':              e,
+            'effective_start':  eff_s if has_data else None,
+            'effective_end':    eff_e if has_data else None,
+            'has_data':         has_data,
+        })
+
+    return result
+
+
+def parse_comparison_timeframe(
+    question: str, available_start: date, available_end: date
+) -> dict:
+    """
+    Detect whether *question* is a period-over-period comparison and, if so,
+    extract both periods.
+
+    Returns:
+        {'is_comparison': False}  — not a comparison query
+        {
+          'is_comparison': True,
+          'period_a': {...},   # earlier period (baseline)
+          'period_b': {...},   # later period (subject)
+          'label': 'April 2026 vs May 2026',
+        }
+    """
+    text = (question or '').strip().lower()
+
+    if not is_comparison_query(text):
+        return {'is_comparison': False}
+
+    periods = _extract_periods_from_text(text, available_start, available_end)
+
+    if len(periods) < 2:
+        return {'is_comparison': False}
+
+    period_a = periods[0]   # older = baseline
+    period_b = periods[1]   # newer = subject
+
+    return {
+        'is_comparison': True,
+        'period_a':      period_a,
+        'period_b':      period_b,
+        'label':         f"{period_a['label']} vs {period_b['label']}",
+    }

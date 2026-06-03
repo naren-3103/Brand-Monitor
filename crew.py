@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import re
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from crewai import Crew, Process
@@ -8,9 +9,10 @@ from utils.azure_openai_client import build_azure_openai_client
 from utils.feedback_loop import (
     FeedbackLoopResult,
     IterationRecord,
-    parse_quality_score,
+    extract_scores_from_task_output,
     extract_critic_issues,
 )
+from utils.critic_models import DimensionScores
 
 
 def _to_timestamp(value):
@@ -129,6 +131,23 @@ from tasks.insight_synthesizer_task import create_insight_synthesizer_task
 from tasks.critic_qa_task import create_critic_qa_task
 
 
+def _should_exit_loop(
+    score: float,
+    dimension_scores: 'DimensionScores | None',
+    threshold: float,
+) -> bool:
+    """
+    Decide whether the feedback loop should stop.
+
+    Factual accuracy is a hard gate: even a 9/10 report must be revised if any
+    number cited is wrong (factual_accuracy < 2).  All other dimensions only need
+    to meet the overall threshold.
+    """
+    if dimension_scores is not None and dimension_scores.factual_accuracy < 2:
+        return False   # never ship a report with wrong numbers
+    return score >= threshold
+
+
 def _run_specialist_phase(
     brand, social_data, search_data, reviews_data, competitor_data,
     prompt_with_timeframe, verified_metrics, llm
@@ -188,7 +207,11 @@ def _run_synthesis_iteration(
 ) -> tuple:
     """
     Run one Synthesizer → Critic cycle.
-    Returns (synthesizer_raw, critic_raw, quality_score).
+    Returns (synthesizer_raw, critic_display_md, quality_score, dimension_scores).
+
+    critic_display_md is user-facing Markdown converted from the Pydantic object
+    (or the raw text if Pydantic parsing failed).
+    dimension_scores is a DimensionScores instance or None.
     """
     synthesizer_agent = create_insight_synthesizer_agent(llm)
     critic_agent      = create_critic_qa_agent(llm)
@@ -224,11 +247,14 @@ def _run_synthesis_iteration(
     result = crew.kickoff()
 
     outputs = getattr(result, 'tasks_output', [])
-    synthesizer_raw = outputs[0].raw if len(outputs) >= 1 else ""
-    critic_raw      = outputs[1].raw if len(outputs) >= 2 else str(result)
-    quality_score   = parse_quality_score(critic_raw)
+    synthesizer_raw      = outputs[0].raw if len(outputs) >= 1 else ""
+    critic_task_output   = outputs[1] if len(outputs) >= 2 else None
 
-    return synthesizer_raw, critic_raw, quality_score
+    quality_score, dimension_scores, critic_display = extract_scores_from_task_output(
+        critic_task_output
+    )
+
+    return synthesizer_raw, critic_display, quality_score, dimension_scores
 
 
 def run_brand_health_crew(
@@ -316,38 +342,52 @@ def run_brand_health_crew(
     for iteration in range(1, max_feedback_iterations + 1):
         print(f"\n🔁 Feedback Loop — Iteration {iteration}/{max_feedback_iterations}")
 
-        synthesizer_raw, critic_raw, quality_score = _run_synthesis_iteration(
-            brand=brand,
-            user_prompt=user_prompt,
-            verified_metrics=verified_metrics,
-            specialist_outputs=specialist_outputs,
-            social_data=social_data,
-            reviews_data=reviews_data,
-            search_data=search_data,
-            llm=llm,
-            iteration=iteration,
-            max_iterations=max_feedback_iterations,
-            critic_feedback=critic_feedback,
+        synthesizer_raw, critic_display, quality_score, dimension_scores = (
+            _run_synthesis_iteration(
+                brand=brand,
+                user_prompt=user_prompt,
+                verified_metrics=verified_metrics,
+                specialist_outputs=specialist_outputs,
+                social_data=social_data,
+                reviews_data=reviews_data,
+                search_data=search_data,
+                llm=llm,
+                iteration=iteration,
+                max_iterations=max_feedback_iterations,
+                critic_feedback=critic_feedback,
+            )
         )
 
         record = IterationRecord(
             iteration=iteration,
             synthesizer_output=synthesizer_raw,
-            critic_output=critic_raw,
+            critic_output=critic_display,
             quality_score=quality_score,
+            dimension_scores=dimension_scores,
         )
         loop_result.append(record)
 
-        print(f"   ✅ Quality score: {quality_score}/10")
+        if dimension_scores:
+            print(f"   ✅ Quality score: {quality_score}/10  "
+                  f"(D1={dimension_scores.factual_accuracy} "
+                  f"D2={dimension_scores.claim_support} "
+                  f"D3={dimension_scores.contradiction_handling} "
+                  f"D4={dimension_scores.recommendation_quality} "
+                  f"D5={dimension_scores.executive_completeness})")
+        else:
+            print(f"   ✅ Quality score: {quality_score}/10")
 
-        if quality_score >= quality_threshold:
+        if _should_exit_loop(quality_score, dimension_scores, quality_threshold):
             loop_result.converged = True
             print(f"   🎯 Quality threshold reached ({quality_score} >= {quality_threshold}) — stopping loop")
             break
 
         if iteration < max_feedback_iterations:
-            critic_feedback = extract_critic_issues(critic_raw)
-            print(f"   ↩️  Score below threshold — running revision {iteration + 1}")
+            critic_feedback = extract_critic_issues(critic_display)
+            if dimension_scores and dimension_scores.factual_accuracy < 2:
+                print(f"   🔴 Factual accuracy gate triggered — must revise despite score")
+            else:
+                print(f"   ↩️  Score below threshold — running revision {iteration + 1}")
         else:
             print(f"   ⚠️  Max iterations reached — using best result")
 
@@ -359,17 +399,26 @@ def run_brand_health_crew(
     synthesizer_raw = loop_result.final_synthesizer
     critic_raw      = loop_result.final_critic
 
-    if synthesizer_raw and critic_raw:
-        final_report = synthesizer_raw + "\n\n---\n\n" + critic_raw
+    # Strip the internal "Feedback for Next Iteration" block — it's an internal
+    # signal for the feedback loop and must not appear in user-facing output.
+    _strip_re = re.compile(
+        r'\n*###\s*Feedback for Next Iteration.*',
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    critic_raw_display = _strip_re.sub('', critic_raw).strip()
+
+    if synthesizer_raw and critic_raw_display:
+        final_report = synthesizer_raw + "\n\n---\n\n" + critic_raw_display
     else:
-        final_report = synthesizer_raw or critic_raw
+        final_report = synthesizer_raw or critic_raw_display
 
     return {
         "brand":            brand,
         "prompt":           user_prompt,
         "final_report":     final_report,
         "executive_report": synthesizer_raw,
-        "qa_review":        critic_raw,
+        "qa_review":        critic_raw_display,
+        "verified_metrics": verified_metrics,
         "data_summary": {
             "social_posts":    len(social_data),
             "search_trends":   len(search_data),
@@ -377,17 +426,22 @@ def run_brand_health_crew(
             "competitor_news": len(competitor_data),
         },
         "feedback_loop": {
-            "iterations":         len(loop_result.iterations),
-            "converged":          loop_result.converged,
-            "quality_threshold":  quality_threshold,
-            "score_progression":  loop_result.score_progression(),
-            "iteration_history":  [
+            "iterations":            len(loop_result.iterations),
+            "converged":             loop_result.converged,
+            "quality_threshold":     quality_threshold,
+            "score_progression":     loop_result.score_progression(),
+            "dimension_progression": loop_result.dimension_progression(),
+            "iteration_history":     [
                 {
                     "iteration":          r.iteration,
                     "quality_score":      r.quality_score,
                     "improved":           r.improved,
                     "synthesizer_output": r.synthesizer_output,
                     "critic_output":      r.critic_output,
+                    "dimension_scores":   (
+                        r.dimension_scores.as_display_dict()
+                        if r.dimension_scores else None
+                    ),
                 }
                 for r in loop_result.iterations
             ],
