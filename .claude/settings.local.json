@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python _fix_nb.py)",
+      "Bash(python -c ' *)",
+      "Bash(python _patch.py)",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -Confirm:$false)"
+    ]
+  }
+}

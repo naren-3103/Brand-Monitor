@@ -1,0 +1,30 @@
+week,week_start_date,news_date,market,competitor_brand,flavor,headline,category,estimated_lays_sentiment_impact,source,is_anomaly_week,anomaly_type
+2024-W50,2024-12-11,2024-12-14,US,Pringles,Original,Pringles kicks off 2025 with Super Bowl party pack bundle — targets Lay's game-day occasion,promotion,-0.03,AdWeek,False,
+2024-W52,2024-12-25,2024-12-27,India,Doritos,Nacho Cheese,"Doritos expands to 800 new Tier-2 city outlets, doubling Nacho Cheese shelf presence",distribution,-0.03,Economic Times,False,
+2025-W01,2025-01-08,2025-01-12,US,Pringles,Sour Cream & Onion,Pringles signs NFL deal — Sour Cream & Onion ads across all 2025 playoff games,partnership,-0.04,Sports Business Journal,False,
+2025-W04,2025-01-29,2025-01-29,India,Doritos,Nacho Cheese,WHO-linked report on ultra-processed snacks — Nacho Cheese and similar flavors called out,external,-0.06,Mint,True,external
+2025-W04,2025-01-29,2025-01-30,US,Pringles,Original,Health groups target chip brands — Pringles Original and Lay's Classic both face negative press,external,-0.05,Business Insider,True,external
+2025-W08,2025-02-26,2025-02-28,India,Pringles,BBQ,Pringles India signs celebrity ambassador — BBQ flavor featured in launch campaign,marketing,-0.04,Mint,False,
+2025-W14,2025-04-09,2025-04-12,India,Pringles,Original,Pringles India sales jump 22% as consumers switch from Lay's amid packaging controversy,competitive,-0.06,Business Standard,True,lays_crisis
+2025-W15,2025-04-16,2025-04-17,India,Pringles,Original,Retailers report Pringles Original demand up 35% WoW — metros running low on stock,competitive,-0.05,Economic Times,False,
+2025-W18,2025-05-07,2025-05-11,US,Doritos,Cool Ranch,Doritos partners with NBA for March Madness — Cool Ranch 60-second spots on ESPN,marketing,-0.03,AdAge,False,
+2025-W22,2025-06-04,2025-06-08,US,Pringles,Sour Cream & Onion,Pringles Q1 2025: North America revenue up 11% — Sour Cream & Onion leads growth,financial,-0.03,Reuters,False,
+2025-W24,2025-06-18,2025-06-20,India,Pringles,Wavy Classic,Pringles launches Wavy Classic and Wavy Ranch in India — priced to compete with Lay's ₹20 pack,product,-0.05,Economic Times,False,
+2025-W24,2025-06-18,2025-06-19,US,Pringles,Wavy Ranch,Pringles Wavy hits US shelves — Walmart gives endcap display replacing Lay's slot,distribution,-0.05,Grocery Dive,False,
+2025-W26,2025-07-02,2025-07-07,India,Pringles,Wavy Classic,Pringles India announces 20% price cut across ALL SKUs including Wavy range — effective immediately,pricing,-0.07,Business Standard,True,competitor
+2025-W26,2025-07-02,2025-07-04,US,Pringles,Wavy Classic,Pringles drops 18% in the US — analysts say Wavy targets Lay's price-sensitive base,pricing,-0.07,Wall Street Journal,True,competitor
+2025-W27,2025-07-09,2025-07-12,US,Pringles,Original,"Week 2 of Pringles price cut: volume up 41%, Lay's market share dips 2.3pts in Nielsen data",pricing,-0.06,Nielsen via AdAge,False,
+2025-W32,2025-08-13,2025-08-13,India,Doritos,Flamin Hot,Doritos Flamin Hot goes viral on Reels — 8M views in 48 hours for Diwali campaign,marketing,-0.04,Social Samosa,False,
+2025-W34,2025-08-27,2025-08-30,India,Pringles,BBQ,Pringles Diwali gift tin featuring BBQ and Original sells out on Amazon India in 36 hours,promotion,-0.04,Economic Times,False,
+2025-W36,2025-09-10,2025-09-10,US,Doritos,Flamin Hot Lime,Doritos Flamin Hot Lime teased on social ahead of launch — massive pre-launch buzz,product,-0.02,Marketing Brew,False,
+2025-W38,2025-09-24,2025-09-26,US,Doritos,Cool Ranch,Doritos influencer scandal: creator uses Cool Ranch campaign to make controversial statement — brand apologises,controversy,0.03,AdWeek,True,competitor
+2025-W38,2025-09-24,2025-09-26,India,Doritos,Cool Ranch,Doritos Cool Ranch influencer controversy trends on Indian Twitter — #BoycottDoritos 180K tweets,controversy,0.03,Social Samosa,True,competitor
+2025-W39,2025-10-01,2025-10-01,US,Doritos,Cool Ranch,Doritos brand trust score drops 14pts in YouGov — Cool Ranch sales down 18% WoW,controversy,0.04,YouGov via Marketing Week,False,
+2025-W44,2025-11-05,2025-11-05,US,Doritos,Flamin Hot Lime,Doritos Flamin Hot Lime officially launches in US — strong early reviews despite brand still recovering,product,-0.02,Snack Food & Wholesale Bakery,False,
+2025-W44,2025-11-05,2025-11-08,India,Doritos,Flamin Hot Lime,Doritos Flamin Hot Lime arrives in India — positioned as premium Rs 30 pack,product,-0.02,Economic Times,False,
+2025-W51,2025-12-24,2025-12-28,India,Pringles,Original,Pringles tries to ride cricket wave with last-minute Original push — response lukewarm vs Lay's WC launch,marketing,0.02,Mint,True,lays_positive
+2026-W04,2026-01-28,2026-01-30,US,Pringles,Wavy Classic,Pringles H1 2025: market share up 1.8pts — Wavy range credited for gains against Lay's,financial,-0.03,Reuters,False,
+2026-W09,2026-03-04,2026-03-05,US,Doritos,Nacho Cheese,Doritos Nacho Cheese relaunch campaign — brand attempting comeback after influencer scandal,marketing,-0.02,AdAge,False,
+2026-W12,2026-03-25,2026-03-29,US,Pringles,Original,Pringles Original fills shelf gaps as Lay's faces US supply chain disruption,competitive,-0.05,Grocery Dive,True,lays_crisis
+2026-W13,2026-04-01,2026-04-03,US,Doritos,Spicy Nacho,Doritos Spicy Nacho benefits from Lay's US stock shortage — convenience stores report surge,competitive,-0.04,Path to Purchase,False,
+2026-W16,2026-04-22,2026-04-27,India,Pringles,Cheddar Cheese,Pringles Cheddar Cheese variant launches India — positioned as premium snack segment entry,product,-0.03,Business Standard,False,

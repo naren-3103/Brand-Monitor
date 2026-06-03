@@ -1,0 +1,8 @@
+streamlit>=1.35.0,<2.0.0
+crewai>=0.55.0,<1.0.0
+crewai-tools>=0.8.0,<1.0.0
+plotly>=5.22.0,<6.0.0
+pandas>=2.2.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+openai>=1.30.0,<2.0.0
+numpy>=1.26.0,<2.0.0
