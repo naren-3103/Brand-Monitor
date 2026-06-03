@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from crewai import Crew, Process
 from utils.azure_openai_client import build_azure_openai_client
 from utils.feedback_loop import (
@@ -133,35 +134,47 @@ def _run_specialist_phase(
     prompt_with_timeframe, verified_metrics, llm
 ) -> dict:
     """
-    Run the 4 specialist agents once. Their data analysis never changes
-    across feedback iterations, so we only pay this cost once.
-    Returns a dict with keys: social, search, review, competitor.
+    Run the 4 specialist agents in parallel using a thread pool.
+
+    Each specialist runs as its own single-agent Crew so they are fully
+    independent. ThreadPoolExecutor fires all 4 at once; the wall-clock
+    time becomes the slowest agent's time instead of the sum of all four.
+
+    Process.parallel does not exist in CrewAI 0.x, so we use
+    concurrent.futures as the parallelism layer instead.
     """
-    social_agent     = create_social_listening_agent(llm)
-    search_agent     = create_search_trend_agent(llm)
-    review_agent     = create_review_theme_agent(llm)
-    competitor_agent = create_competitor_monitoring_agent(llm)
 
-    social_task     = create_social_listening_task(social_agent,     social_data,     brand, prompt_with_timeframe, verified_metrics)
-    search_task     = create_search_trend_task(search_agent,         search_data,     brand, prompt_with_timeframe, verified_metrics)
-    review_task     = create_review_theme_task(review_agent,         reviews_data,    brand, prompt_with_timeframe, verified_metrics)
-    competitor_task = create_competitor_monitoring_task(competitor_agent, competitor_data, brand, prompt_with_timeframe, verified_metrics)
+    # Descriptor: (output_key, agent_factory, task_factory, data)
+    specs = [
+        ('social',     create_social_listening_agent,     create_social_listening_task,     social_data),
+        ('search',     create_search_trend_agent,         create_search_trend_task,         search_data),
+        ('review',     create_review_theme_agent,         create_review_theme_task,         reviews_data),
+        ('competitor', create_competitor_monitoring_agent, create_competitor_monitoring_task, competitor_data),
+    ]
 
-    crew = Crew(
-        agents=[social_agent, search_agent, review_agent, competitor_agent],
-        tasks=[social_task, search_task, review_task, competitor_task],
-        process=Process.sequential,
-        verbose=True,
-    )
-    result = crew.kickoff()
+    def _run_one(key, create_agent_fn, create_task_fn, data):
+        agent = create_agent_fn(llm)
+        task  = create_task_fn(agent, data, brand, prompt_with_timeframe, verified_metrics)
+        crew  = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
+        result = crew.kickoff()
+        outputs = getattr(result, 'tasks_output', [])
+        raw = outputs[0].raw if outputs else ""
+        print(f"  ✅ [{key}] specialist complete")
+        return key, raw
 
-    outputs = getattr(result, 'tasks_output', [])
-    return {
-        'social':     outputs[0].raw if len(outputs) > 0 else "",
-        'search':     outputs[1].raw if len(outputs) > 1 else "",
-        'review':     outputs[2].raw if len(outputs) > 2 else "",
-        'competitor': outputs[3].raw if len(outputs) > 3 else "",
-    }
+    results = {key: "" for key, *_ in specs}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_run_one, *spec): spec[0] for spec in specs}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                key, raw = future.result()
+                results[key] = raw
+            except Exception as exc:
+                print(f"  ⚠️  [{key}] specialist failed: {exc}")
+
+    return results
 
 
 def _run_synthesis_iteration(
