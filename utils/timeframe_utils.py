@@ -6,19 +6,36 @@ from datetime import date, datetime, timedelta
 from typing import Dict, Optional, Tuple, Iterable, Union
 
 MONTHS = {
-    'january': 1,
-    'february': 2,
-    'march': 3,
-    'april': 4,
-    'may': 5,
-    'june': 6,
-    'july': 7,
-    'august': 8,
-    'september': 9,
-    'october': 10,
-    'november': 11,
-    'december': 12,
+    # Full names
+    'january': 1,  'february': 2,  'march': 3,    'april': 4,
+    'may': 5,      'june': 6,      'july': 7,      'august': 8,
+    'september': 9,'october': 10,  'november': 11, 'december': 12,
+    # Three-letter abbreviations
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+    'jun': 6, 'jul': 7, 'aug': 8,
+    'sep': 9, 'oct': 10,'nov': 11, 'dec': 12,
+    # Extra common spelling
+    'sept': 9,
 }
+
+# Canonical display names — always use these in labels, never raw matched strings
+MONTH_DISPLAY = {
+    1: 'January',  2: 'February',  3: 'March',    4: 'April',
+    5: 'May',      6: 'June',      7: 'July',      8: 'August',
+    9: 'September',10: 'October',  11: 'November', 12: 'December',
+}
+
+# Pre-built regex pieces — sorted longest-first so e.g. 'september' is tried
+# before 'sep', preventing a short abbrev from stealing the match.
+_MONTH_KEYS_SORTED = sorted(MONTHS.keys(), key=len, reverse=True)
+
+# Matches "January 2026", "Jan 2026", "Jan. 2026", "Jan, 2026" (case-insensitive)
+_MONTH_YEAR_RE = (
+    r'\b(' + '|'.join(_MONTH_KEYS_SORTED) + r')[.,]?\s+(20\d{2})\b'
+)
+
+# Matches ISO / numeric month: "2025-12", "2026/01"
+_YYYY_MM_RE = r'\b(20\d{2})[-/](0?[1-9]|1[0-2])\b'
 
 
 def format_date(dt: date) -> str:
@@ -156,12 +173,13 @@ def parse_timeframe(question: str, available_start: date, available_end: date) -
 
     def parse_relative_week(text_value: str) -> Optional[tuple]:
         ordinal_match = re.search(
-            r'\b(first|second|third|fourth|fifth|last)\s+week\s+of\s+(' + '|'.join(MONTHS.keys()) + r')\s+(20\d{2})\b',
-            text_value
+            r'\b(first|second|third|fourth|fifth|last)\s+week\s+of\s+(' + '|'.join(_MONTH_KEYS_SORTED) + r')[.,]?\s+(20\d{2})\b',
+            text_value,
+            re.IGNORECASE,
         )
         if ordinal_match:
             ordinal = ordinal_match.group(1)
-            month_name = ordinal_match.group(2)
+            month_name = ordinal_match.group(2).lower()
             year = int(ordinal_match.group(3))
             month = MONTHS[month_name]
             month_start = date(year, month, 1)
@@ -322,16 +340,26 @@ def parse_timeframe(question: str, available_start: date, available_end: date) -
     if explicit_date:
         return fill(explicit_date.strftime('%B %d, %Y'), explicit_date, explicit_date)
 
-    # ── 11. Month + year: "january 2024" ──────────────────────────────────────
-    month_match = re.search(r'\b(' + '|'.join(MONTHS.keys()) + r')\s+(20\d{2})\b', text)
+    # ── 11. Month + year: "January 2024", "Jan 2024", "Jan. 2024" ────────────
+    month_match = re.search(_MONTH_YEAR_RE, text, re.IGNORECASE)
     if month_match:
-        month_name = month_match.group(1)
-        year = int(month_match.group(2))
-        month = MONTHS[month_name]
+        month_num = MONTHS[month_match.group(1).lower()]
+        year      = int(month_match.group(2))
         return fill(
-            f'{month_name.title()} {year}',
-            date(year, month, 1),
-            date(year, month, calendar.monthrange(year, month)[1])
+            f'{MONTH_DISPLAY[month_num]} {year}',
+            date(year, month_num, 1),
+            date(year, month_num, calendar.monthrange(year, month_num)[1])
+        )
+
+    # ── 11b. Numeric month: "2024-12", "2024/12" ──────────────────────────────
+    yyyy_mm = re.search(_YYYY_MM_RE, text)
+    if yyyy_mm:
+        year      = int(yyyy_mm.group(1))
+        month_num = int(yyyy_mm.group(2))
+        return fill(
+            f'{MONTH_DISPLAY[month_num]} {year}',
+            date(year, month_num, 1),
+            date(year, month_num, calendar.monthrange(year, month_num)[1])
         )
 
     # ── 12. Year only: "2024" ──────────────────────────────────────────────────
@@ -456,7 +484,7 @@ def _extract_periods_from_text(
     claimed_years: set = set()
 
     # 1. Quarters: "q1 2026", "q2 2025"
-    for m in re.finditer(r'\bq([1-4])\s*(20\d{2})\b', text):
+    for m in re.finditer(r'\bq([1-4])\s*(20\d{2})\b', text, re.IGNORECASE):
         q, year = int(m.group(1)), int(m.group(2))
         sm = 3 * (q - 1) + 1
         em = sm + 2
@@ -467,14 +495,25 @@ def _extract_periods_from_text(
         ))
         claimed_years.add(year)
 
-    # 2. Month + year: "may 2026", "april 2026"
-    for m in re.finditer(r'\b(' + '|'.join(MONTHS.keys()) + r')\s+(20\d{2})\b', text):
-        month_num = MONTHS[m.group(1)]
-        year = int(m.group(2))
+    # 2. Month + year: "May 2026", "Jan 2026", "Jan. 2026", "dec 2025"
+    for m in re.finditer(_MONTH_YEAR_RE, text, re.IGNORECASE):
+        month_num = MONTHS[m.group(1).lower()]
+        year      = int(m.group(2))
         raw.append((
             date(year, month_num, 1),
             date(year, month_num, calendar.monthrange(year, month_num)[1]),
-            f'{m.group(1).title()} {year}',
+            f'{MONTH_DISPLAY[month_num]} {year}',   # always full name
+        ))
+        claimed_years.add(year)
+
+    # 2b. Numeric month: "2025-12", "2026/01"
+    for m in re.finditer(_YYYY_MM_RE, text):
+        year      = int(m.group(1))
+        month_num = int(m.group(2))
+        raw.append((
+            date(year, month_num, 1),
+            date(year, month_num, calendar.monthrange(year, month_num)[1]),
+            f'{MONTH_DISPLAY[month_num]} {year}',
         ))
         claimed_years.add(year)
 
