@@ -115,6 +115,7 @@ def compute_verified_metrics(social_data, reviews_data, search_data, competitor_
 
 
 # Import all agents
+from agents.query_parser_agent import create_query_parser_agent
 from agents.social_listening_agent import create_social_listening_agent
 from agents.search_trend_agent import create_search_trend_agent
 from agents.review_theme_agent import create_review_theme_agent
@@ -123,12 +124,67 @@ from agents.insight_synthesizer_agent import create_insight_synthesizer_agent
 from agents.critic_qa_agent import create_critic_qa_agent
 
 # Import all tasks
+from tasks.query_parser_task import create_query_parser_task
 from tasks.social_listening_task import create_social_listening_task
 from tasks.search_trend_task import create_search_trend_task
 from tasks.review_theme_task import create_review_theme_task
 from tasks.competitor_monitoring_task import create_competitor_monitoring_task
 from tasks.insight_synthesizer_task import create_insight_synthesizer_task
 from tasks.critic_qa_task import create_critic_qa_task
+
+from utils.query_parser import ParsedQuery, _build_result
+
+
+def run_query_parser(
+    question:    str,
+    avail_start,
+    avail_end,
+    llm=None,
+) -> dict:
+    """
+    Phase 0 of the brand health pipeline.
+
+    Runs the Query Parser Agent — the first CrewAI agent in the system —
+    to determine relevance, detect comparison intent, and extract ISO date
+    ranges from the user's natural-language question.
+
+    Returns the same structured dict that app.py consumes:
+      {
+        'is_relevant':   bool,
+        'is_comparison': bool,
+        'reason':        str,
+        'period':        {...}          # single-period queries
+        'period_a'/'period_b': {...}   # comparison queries
+      }
+    """
+    if llm is None:
+        llm = build_azure_openai_client()
+
+    agent = create_query_parser_agent(llm)
+    task  = create_query_parser_task(agent, question, avail_start, avail_end)
+
+    crew = Crew(
+        agents=[agent],
+        tasks=[task],
+        process=Process.sequential,
+        verbose=False,
+    )
+    result = crew.kickoff()
+
+    outputs      = getattr(result, 'tasks_output', [])
+    task_output  = outputs[0] if outputs else None
+    parsed_obj   = getattr(task_output, 'pydantic', None) if task_output else None
+
+    if parsed_obj is None or not isinstance(parsed_obj, ParsedQuery):
+        print(f"[query_parser] Pydantic parse failed — safe fallback applied. "
+              f"Raw: {getattr(task_output, 'raw', '')[:200]}")
+        parsed_obj = ParsedQuery(
+            is_relevant=True,
+            is_comparison=False,
+            reason="pydantic parsing failed — safe fallback applied",
+        )
+
+    return _build_result(parsed_obj, avail_start, avail_end)
 
 
 def _should_exit_loop(

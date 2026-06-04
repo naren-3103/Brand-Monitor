@@ -17,16 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from utils.azure_openai_client import build_azure_openai_client
 
-from crew import run_brand_health_crew
+from crew import run_brand_health_crew, run_query_parser
 
-from tasks.relevance_checker import is_question_relevant
-
-from utils.timeframe_utils import (
-    parse_timeframe,
-    parse_comparison_timeframe,
-    format_date_availability,
-    get_data_availability,
-)
+from utils.timeframe_utils import format_date_availability, get_data_availability
 
 from utils.comparison_synthesizer import synthesize_comparison
 
@@ -819,219 +812,146 @@ with tab6:
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
 
-    def _timeframe_label(timeframe: dict) -> str:
-        """Return a human-readable timeframe string for the report button label."""
-        start = timeframe.get('effective_start')
-        end   = timeframe.get('effective_end')
-        if start is None or end is None:
-            return ""
-        days = (end - start).days + 1
-        if days == 1:
-            return f"for {start:%b %d, %Y}"
-        elif days <= 7:
-            return f"for the past {days} days"
-        elif days <= 14:
-            return "for the past 2 weeks"
-        elif days <= 31:
-            weeks = round(days / 7)
-            return f"for the past {weeks} week{'s' if weeks > 1 else ''}"
-        elif days <= 93:
-            months = round(days / 30)
-            return f"for the past {months} month{'s' if months > 1 else ''}"
-        else:
-            return f"for {start:%b %d} – {end:%b %d, %Y}"
-
-
-
     st.info(
-
         f"Data availability for Ask AI: {availability_text}. "
-
         "Any timeframe outside this range will return 'Data not available'."
-
     )
-
-
 
     user_question = st.text_input(
-
         "Ask a question",
-
         placeholder="What changed in brand health this week?"
-
     )
-
-
 
     if st.button("🚀 Ask"):
 
         if not user_question.strip():
             st.warning("Please enter a question first")
         else:
-            ai_answer = ""
+            ai_answer       = ""
             executive_report = ""
-            tf_label = ""
+            tf_label        = ""
 
-            # ── Relevance gate ────────────────────────────────────────────────
-            with st.spinner("🔍 Checking question relevance..."):
-                is_relevant = is_question_relevant(user_question, client)
-
-            if not is_relevant:
-                ai_answer = "I don't know"
-
-            else:
-                # ── Comparison vs single-period routing ───────────────────────
-                comparison = parse_comparison_timeframe(
-                    user_question, availability_start, availability_end
+            # ── Query Parser Agent (Phase 0) ──────────────────────────────────
+            with st.spinner("🔍 Analysing question..."):
+                parsed = run_query_parser(
+                    user_question, availability_start, availability_end, client
                 )
 
-                if comparison['is_comparison']:
-                    # ── COMPARISON PATH ───────────────────────────────────────
-                    period_a = comparison['period_a']
-                    period_b = comparison['period_b']
+            if not parsed['is_relevant']:
+                ai_answer = "I don't know"
 
-                    if not period_a['has_data'] and not period_b['has_data']:
-                        ai_answer = (
-                            f"Data not available for either period in "
-                            f"**{comparison['label']}**. "
-                            f"Available data is from {availability_text}."
-                        )
-                    else:
-                        spinner_label = (
-                            f"📊 Running comparison: "
-                            f"{comparison['label']} — two crews in parallel..."
-                        )
-                        with st.spinner(spinner_label):
-                            try:
-                                # Run both periods in parallel; each has its own
-                                # 4-specialist phase + 2-iteration feedback loop.
-                                # max_feedback_iterations=2 keeps comparison fast.
-                                with ThreadPoolExecutor(max_workers=2) as pool:
-                                    fut_a = (
-                                        pool.submit(
-                                            run_brand_health_crew,
-                                            brand="Lay's",
-                                            user_prompt=user_question,
-                                            llm=client,
-                                            start_date=period_a['effective_start'],
-                                            end_date=period_a['effective_end'],
-                                            max_feedback_iterations=2,
-                                            quality_threshold=7.5,
-                                        )
-                                        if period_a['has_data'] else None
-                                    )
-                                    fut_b = (
-                                        pool.submit(
-                                            run_brand_health_crew,
-                                            brand="Lay's",
-                                            user_prompt=user_question,
-                                            llm=client,
-                                            start_date=period_b['effective_start'],
-                                            end_date=period_b['effective_end'],
-                                            max_feedback_iterations=2,
-                                            quality_threshold=7.5,
-                                        )
-                                        if period_b['has_data'] else None
-                                    )
-                                # Both futures are done when the pool exits
-                                _empty = {
-                                    "executive_report": "",
-                                    "verified_metrics": {},
-                                    "data_summary": {},
-                                }
-                                result_a = fut_a.result() if fut_a else _empty
-                                result_b = fut_b.result() if fut_b else _empty
+            elif parsed['is_comparison']:
+                # ── COMPARISON PATH ───────────────────────────────────────────
+                period_a = parsed['period_a']
+                period_b = parsed['period_b']
 
-                                total_rows = sum(
-                                    result_a.get("data_summary", {}).values()
-                                ) + sum(
-                                    result_b.get("data_summary", {}).values()
-                                )
-
-                                if total_rows == 0:
-                                    ai_answer = (
-                                        f"No data found for either period in "
-                                        f"**{comparison['label']}**. "
-                                        f"Available data is from {availability_text}."
-                                    )
-                                else:
-                                    ai_answer = synthesize_comparison(
-                                        result_a, result_b,
-                                        comparison, user_question, client,
-                                    )
-                                    tf_label = comparison['label']
-                                    st.session_state['last_feedback_loop'] = (
-                                        result_b.get('feedback_loop')
-                                        or result_a.get('feedback_loop', {})
-                                    )
-
-                            except Exception as e:
-                                ai_answer = (
-                                    f"⚠️ Error running comparison analysis:\n\n"
-                                    f"{str(e)}\n\n"
-                                    f"Please ensure all data files are present in the 'data/' directory."
-                                )
-
-                else:
-                    # ── SINGLE-PERIOD PATH ────────────────────────────────────
-                    timeframe = parse_timeframe(
-                        user_question, availability_start, availability_end
+                if not period_a['has_data'] and not period_b['has_data']:
+                    ai_answer = (
+                        f"Data not available for either period in "
+                        f"**{parsed['label']}**. "
+                        f"Available data is from {availability_text}."
                     )
-
-                    if timeframe['matched'] and not timeframe['has_data']:
-                        ai_answer = (
-                            f"Data not available for the requested timeframe "
-                            f"({timeframe['requested_start']:%Y-%m-%d} to "
-                            f"{timeframe['requested_end']:%Y-%m-%d}). "
-                            f"Available data is from {availability_text}."
-                        )
-                    else:
-                        with st.spinner(
-                            "📊 Running 6-Agent Brand Health Analysis with Feedback Loop..."
-                        ):
-                            try:
-                                crew_result = run_brand_health_crew(
-                                    brand="Lay's",
-                                    user_prompt=user_question,
-                                    llm=client,
-                                    start_date=timeframe.get('effective_start'),
-                                    end_date=timeframe.get('effective_end'),
-                                    max_feedback_iterations=3,
-                                    quality_threshold=7.5,
+                else:
+                    with st.spinner(
+                        f"📊 Running comparison: {parsed['label']} — two crews in parallel..."
+                    ):
+                        try:
+                            _empty = {"executive_report": "", "verified_metrics": {}, "data_summary": {}}
+                            with ThreadPoolExecutor(max_workers=2) as pool:
+                                fut_a = (
+                                    pool.submit(
+                                        run_brand_health_crew,
+                                        brand="Lay's", user_prompt=user_question, llm=client,
+                                        start_date=period_a['effective_start'],
+                                        end_date=period_a['effective_end'],
+                                        max_feedback_iterations=2, quality_threshold=7.5,
+                                    ) if period_a['has_data'] else None
                                 )
+                                fut_b = (
+                                    pool.submit(
+                                        run_brand_health_crew,
+                                        brand="Lay's", user_prompt=user_question, llm=client,
+                                        start_date=period_b['effective_start'],
+                                        end_date=period_b['effective_end'],
+                                        max_feedback_iterations=2, quality_threshold=7.5,
+                                    ) if period_b['has_data'] else None
+                                )
+                            result_a = fut_a.result() if fut_a else _empty
+                            result_b = fut_b.result() if fut_b else _empty
 
-                                if sum(crew_result["data_summary"].values()) == 0:
-                                    if timeframe['matched']:
-                                        ai_answer = (
-                                            f"Data not available for the requested timeframe "
-                                            f"({timeframe['requested_start']:%Y-%m-%d} to "
-                                            f"{timeframe['requested_end']:%Y-%m-%d}). "
-                                            f"Available data is from {availability_text}."
-                                        )
-                                    else:
-                                        ai_answer = "No relevant data available for this query."
-                                else:
-                                    ai_answer = (
-                                        crew_result.get("qa_review")
-                                        or crew_result["final_report"]
-                                    )
-                                    executive_report = crew_result.get("executive_report", "")
-                                    tf_label = _timeframe_label(timeframe)
-                                    st.session_state['last_feedback_loop'] = (
-                                        crew_result.get("feedback_loop", {})
-                                    )
-
-                            except Exception as e:
+                            total_rows = (
+                                sum(result_a.get("data_summary", {}).values())
+                                + sum(result_b.get("data_summary", {}).values())
+                            )
+                            if total_rows == 0:
                                 ai_answer = (
-                                    f"⚠️ Error Running Crew Analysis:\n\n"
-                                    f"{str(e)}\n\n"
-                                    f"Please ensure all data files are present in the 'data/' directory."
+                                    f"No data found for either period in "
+                                    f"**{parsed['label']}**. "
+                                    f"Available data is from {availability_text}."
                                 )
+                            else:
+                                ai_answer = synthesize_comparison(
+                                    result_a, result_b, parsed, user_question, client
+                                )
+                                tf_label = parsed['label']
+                                st.session_state['last_feedback_loop'] = (
+                                    result_b.get('feedback_loop')
+                                    or result_a.get('feedback_loop', {})
+                                )
+
+                        except Exception as e:
+                            ai_answer = (
+                                f"⚠️ Error running comparison analysis:\n\n{str(e)}\n\n"
+                                f"Please ensure all data files are present in the 'data/' directory."
+                            )
+
+            else:
+                # ── SINGLE-PERIOD PATH ────────────────────────────────────────
+                period = parsed['period']
+
+                if not period['has_data'] and period['start'] is not None:
+                    ai_answer = (
+                        f"Data not available for **{period['label']}**. "
+                        f"Available data is from {availability_text}."
+                    )
+                else:
+                    with st.spinner("📊 Running 6-Agent Brand Health Analysis with Feedback Loop..."):
+                        try:
+                            crew_result = run_brand_health_crew(
+                                brand="Lay's",
+                                user_prompt=user_question,
+                                llm=client,
+                                start_date=period['effective_start'],
+                                end_date=period['effective_end'],
+                                max_feedback_iterations=3,
+                                quality_threshold=7.5,
+                            )
+
+                            if sum(crew_result["data_summary"].values()) == 0:
+                                ai_answer = (
+                                    f"No relevant data found for **{period['label']}**. "
+                                    f"Available data is from {availability_text}."
+                                )
+                            else:
+                                ai_answer = (
+                                    crew_result.get("qa_review")
+                                    or crew_result["final_report"]
+                                )
+                                executive_report = crew_result.get("executive_report", "")
+                                tf_label = period['label'] if period['start'] else ""
+                                st.session_state['last_feedback_loop'] = (
+                                    crew_result.get("feedback_loop", {})
+                                )
+
+                        except Exception as e:
+                            ai_answer = (
+                                f"⚠️ Error Running Crew Analysis:\n\n{str(e)}\n\n"
+                                f"Please ensure all data files are present in the 'data/' directory."
+                            )
 
             # ── Store in chat history ─────────────────────────────────────────
-            chat_id = len(st.session_state.chat_history)
             st.session_state.chat_history.append({
-                "id":               chat_id,
+                "id":               len(st.session_state.chat_history),
                 "question":         user_question,
                 "answer":           ai_answer,
                 "executive_report": executive_report,
