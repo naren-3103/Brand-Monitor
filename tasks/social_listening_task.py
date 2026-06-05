@@ -1,5 +1,4 @@
 from crewai import Task
-from utils.evidence_card import EvidenceCard
 
 
 def create_social_listening_task(agent, social_data, brand, user_prompt, verified_metrics=None):

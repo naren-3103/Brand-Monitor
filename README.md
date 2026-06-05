@@ -219,7 +219,7 @@ brand_monitor_pipeline/
 ├── crew.py                 # Orchestration: Phase 0 (query parser) + Phase 1 (specialists) + Phase 2 (feedback loop)
 ├── requirements.txt        # Pinned production dependencies
 ├── requirements-dev.txt    # Dev/test dependencies
-├── Makefile                # Common commands (run, test, lint, format)
+├── Makefile                # Common commands (run, lint, format)
 ├── .env.example            # Environment variable template
 │
 ├── agents/                 # One file per agent (Phase 0 + 4 specialists + 2 synthesis)
@@ -240,19 +240,15 @@ brand_monitor_pipeline/
 │   ├── insight_synthesizer_task.py   # accepts critic_feedback + iteration for revisions
 │   └── critic_qa_task.py             # 5-dimension rubric, output_pydantic=CriticQAOutput
 │
-├── config/
-│   └── settings.py         # All thresholds, paths, and constants
-│
 ├── utils/
 │   ├── anomaly_detection.py          # Z-score anomaly detection for search trends
 │   ├── azure_openai_client.py        # Azure OpenAI LLM client builder
 │   ├── comparison_synthesizer.py     # Python delta table + LLM comparison narrative
 │   ├── contradiction_checker.py      # Cross-channel signal contradiction detection
 │   ├── critic_models.py              # DimensionScores, CriticQAOutput (Pydantic)
-│   ├── evidence_card.py              # EvidenceCard dataclass for agent outputs
 │   ├── feedback_loop.py              # FeedbackLoopResult, extract_scores_from_task_output
 │   ├── query_parser.py               # ParsedQuery Pydantic model + _to_date/_clamp/_build_result helpers
-│   └── timeframe_utils.py            # Date utilities only (get_data_availability, etc.)
+│   └── timeframe_utils.py            # get_data_availability + format_date_availability
 │
 ├── data/                   # CSV data files (gitignored if sensitive)
 ├── logs/                   # Runtime logs (gitignored)
@@ -333,17 +329,6 @@ pytest tests/ -v
 ---
 
 ## Configuration
-
-All tuneable values are in [`config/settings.py`](config/settings.py):
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `BRAND_NAME` | `"Lay's"` | Brand to analyse |
-| `NEGATIVE_SENTIMENT_SPIKE_THRESHOLD` | `30` | % negative posts to flag a spike |
-| `ANOMALY_ZSCORE_THRESHOLD` | `2` | Z-score for search anomaly detection |
-| `COMPETITOR_HIGH_IMPACT_THRESHOLD` | `-0.05` | Sentiment impact threshold for threats |
-| `COMPETITOR_OPPORTUNITY_THRESHOLD` | `+0.05` | Sentiment impact threshold for opportunities |
-| `CREW_VERBOSE` | `True` | Show per-agent reasoning in console |
 
 Feedback loop parameters are passed directly to `run_brand_health_crew()`:
 
