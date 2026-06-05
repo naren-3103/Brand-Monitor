@@ -2,26 +2,94 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
-
+import re
+from datetime import date
+from io import BytesIO
 from pathlib import Path
-# Edited by Copilot: enable apply-filters feature
 
 import streamlit as st
-
 import pandas as pd
-
 import plotly.graph_objects as go
-
 from concurrent.futures import ThreadPoolExecutor
+from fpdf import FPDF
 
 from utils.azure_openai_client import build_azure_openai_client
-
 from crew import run_brand_health_crew, run_query_parser
-
 from utils.timeframe_utils import format_date_availability, get_data_availability
-
 from utils.comparison_synthesizer import synthesize_comparison
+
+
+# ── Download helpers ──────────────────────────────────────────────────────────
+
+def _strip_markdown(text: str) -> str:
+    """Convert markdown to plain text suitable for PDF rendering."""
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+    text = re.sub(r'^-{3,}$', '-' * 60, text, flags=re.MULTILINE)
+    # Normalise smart quotes / dashes / bullets → latin-1-safe equivalents
+    text = (text
+            .replace(''', "'").replace(''', "'")
+            .replace('"', '"').replace('"', '"')
+            .replace('–', '-').replace('—', '--')
+            .replace('•', '-').replace('─', '-'))
+    return text
+
+
+def _safe_latin1(text: str) -> str:
+    """Encode to latin-1 replacing unmappable characters, then decode back."""
+    return text.encode('latin-1', errors='replace').decode('latin-1')
+
+
+def _make_pdf(question: str, content: str) -> bytes:
+    """Build a PDF from the brand health report content and return raw bytes."""
+    from fpdf.enums import XPos, YPos
+
+    pdf = FPDF()
+    pdf.set_margins(left=20, top=20, right=20)          # must be before add_page
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # In fpdf2 2.8+, multi_cell(0, ...) is broken when custom margins are set.
+    # Use pdf.epw (effective page width) instead.
+    w = pdf.epw
+    today_str = date.today().strftime('%B %d, %Y')
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(w, 10, _safe_latin1("Lay's Brand Health Report"),
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(w, 6, _safe_latin1(f"Generated: {today_str}"),
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+    pdf.ln(6)
+
+    # ── Question block ────────────────────────────────────────────────────────
+    pdf.set_fill_color(240, 240, 255)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.multi_cell(w, 8, _safe_latin1(f"Question: {question}"), fill=True)
+    pdf.ln(5)
+
+    # ── Report body ───────────────────────────────────────────────────────────
+    clean = _strip_markdown(content)
+    pdf.set_font("Helvetica", "", 10)
+    for line in clean.split('\n'):
+        safe_line = _safe_latin1(line)
+        if safe_line.strip():
+            pdf.multi_cell(w, 6, safe_line)
+        else:
+            pdf.ln(3)
+
+    return bytes(pdf.output())
+
+
+def _report_filename(question: str, ext: str) -> str:
+    """Build a safe filename from the question text."""
+    slug = re.sub(r'[^a-z0-9]+', '_', question.lower())[:40].strip('_')
+    today_str = date.today().strftime('%Y%m%d')
+    return f"brand_health_{slug}_{today_str}.{ext}"
 
 
 
@@ -993,11 +1061,41 @@ with tab6:
                 key=f"edit_{chat['id']}"
             )
 
-            if st.button(
-                "Submit Review",
-                key=f"submit_{chat['id']}"
-            ):
-                st.success("Review Submitted")
+            # ── Action buttons ────────────────────────────────────────────────
+            btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+
+            with btn_col1:
+                if st.button("✅ Submit Review", key=f"submit_{chat['id']}"):
+                    st.success("Review submitted successfully.")
+
+            with btn_col2:
+                pdf_bytes = _make_pdf(chat['question'], edited_report)
+                st.download_button(
+                    label="📄 Download as PDF",
+                    data=pdf_bytes,
+                    file_name=_report_filename(chat['question'], "pdf"),
+                    mime="application/pdf",
+                    key=f"pdf_{chat['id']}",
+                    use_container_width=True,
+                )
+
+            with btn_col3:
+                text_content = (
+                    f"Lay's Brand Health Report\n"
+                    f"Generated: {date.today().strftime('%B %d, %Y')}\n"
+                    f"{'=' * 60}\n\n"
+                    f"Question: {chat['question']}\n\n"
+                    f"{'─' * 60}\n\n"
+                    f"{edited_report}"
+                )
+                st.download_button(
+                    label="📝 Download as Text",
+                    data=text_content,
+                    file_name=_report_filename(chat['question'], "txt"),
+                    mime="text/plain",
+                    key=f"txt_{chat['id']}",
+                    use_container_width=True,
+                )
 
             st.markdown("---")
 
