@@ -382,6 +382,53 @@ Feedback loop parameters are passed directly to `run_brand_health_crew()`:
 
 ---
 
+## Reviews Tab
+
+The **Reviews** tab provides an interactive breakdown of customer review data, filterable by the market and week range set in the sidebar.
+
+### Flavor selector
+
+A dropdown at the top of the tab lists every distinct flavor present in the filtered dataset. Selecting a flavor scopes all content below to that flavor only. Leaving it at **All Flavors** (default) combines reviews across every flavor.
+
+### Summary metrics
+
+Four KPI cards are shown for the selected scope:
+
+| Card | Value |
+|------|-------|
+| Total Reviews | Count of reviews in scope |
+| Avg Star Rating | Mean star rating (1–5), rounded to 2 dp |
+| Positive (4–5 ★) | Percentage of reviews rated 4 or 5 stars |
+| Negative (1–2 ★) | Percentage of reviews rated 1 or 2 stars |
+
+### AI-generated verbal summary
+
+Immediately below the KPI cards, an LLM-generated 3–4 sentence paragraph summarises what customers are actually saying — covering overall sentiment, key positives, and main complaints in plain English.
+
+**Implementation notes:**
+- Uses **Azure OpenAI** directly via the `openai` SDK (`AzureOpenAI` client), not through CrewAI, since this is a one-shot call rather than an agent task
+- Reads the same env vars as `utils/azure_openai_client.py` (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`)
+- **Samples up to 40 reviews at random** from the filtered set before sending to the LLM — this keeps the prompt within token limits while still capturing a representative cross-section of customer opinion; a note to this effect is displayed below the summary
+- Results are cached with `@st.cache_data` so switching back to a previously selected flavor is instant (no repeat API call)
+- If the API call fails, a fallback message is shown instead of crashing the tab
+
+### Average star rating visual
+
+A golden star display (`★★★★☆  3.87 / 5`) rendered as a styled heading using filled and empty star characters, followed by the numeric average.
+
+### Most positive & most negative reviews
+
+Two side-by-side columns each show **2 review cards** selected from the filtered scope:
+
+| Column | Selection criteria |
+|--------|--------------------|
+| 👍 Most Positive | `star_rating >= 4`, sorted by `helpful_votes` descending |
+| 👎 Most Negative | `star_rating <= 2`, sorted by `helpful_votes` descending |
+
+Each card shows the star string, the full review text, and a caption with helpful vote count, platform, and review date. When **All Flavors** is selected, the flavor name is also shown in the card header.
+
+---
+
 ## Agent Observability
 
 The **Agent Observability** tab shows live feedback loop data after each analysis run:

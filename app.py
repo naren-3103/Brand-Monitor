@@ -6,6 +6,7 @@ import re
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+import os
 
 import streamlit as st
 import pandas as pd
@@ -41,6 +42,45 @@ def _strip_markdown(text: str) -> str:
 def _safe_latin1(text: str) -> str:
     """Encode to latin-1 replacing unmappable characters, then decode back."""
     return text.encode('latin-1', errors='replace').decode('latin-1')
+
+
+@st.cache_data(show_spinner=False)
+def _generate_review_summary(review_texts: tuple, flavor_label: str) -> str:
+    import random
+    from openai import AzureOpenAI
+
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("AZURE_OPENAI_OPENAI_ENDPOINT", "")
+    api_key  = os.getenv("AZURE_OPENAI_API_KEY", "")
+    deploy   = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or os.getenv("AZURE_OPENAI_MODEL_NAME", "")
+    version  = os.getenv("AZURE_OPENAI_API_VERSION", "")
+
+    if endpoint.endswith("/openai/v1/") or endpoint.endswith("/openai/v1"):
+        endpoint = endpoint[: endpoint.rfind("/openai/v1")] + "/"
+    if not endpoint.endswith("/"):
+        endpoint += "/"
+
+    sample = random.sample(review_texts, min(40, len(review_texts)))
+    combined = "\n".join(f"- {t}" for t in sample)
+
+    try:
+        az = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version=version)
+        resp = az.chat.completions.create(
+            model=deploy,
+            messages=[
+                {"role": "system", "content": "You are a concise customer insights analyst."},
+                {"role": "user", "content": (
+                    f"Here are customer reviews for Lay's {flavor_label}:\n{combined}\n\n"
+                    "Write a 3–4 sentence summary of what customers are saying overall. "
+                    "Cover the general sentiment, the main things customers like, and the main complaints. "
+                    "Be specific and factual. Do not use bullet points."
+                )},
+            ],
+            temperature=0.4,
+            max_tokens=200,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Summary unavailable: {e}"
 
 
 def _make_pdf(question: str, content: str) -> bytes:
@@ -755,6 +795,14 @@ with tab3:
         c2.metric("Avg Star Rating", f"{avg_rating:.2f} / 5")
         c3.metric("Positive (4-5 ★)", f"{pct_positive:.1f}%")
         c4.metric("Negative (1-2 ★)", f"{pct_negative:.1f}%")
+
+        # ── AI verbal summary ──────────────────────────────────────────────────
+        flavor_label = selected_flavor if selected_flavor != "All Flavors" else "all flavors"
+        all_texts = tuple(flavor_df['review_text'].dropna().tolist())
+        with st.spinner("Generating review summary…"):
+            summary_text = _generate_review_summary(all_texts, flavor_label)
+        st.info(f"**What customers are saying:** {summary_text}")
+        st.caption("*Summary generated from a sample of up to 40 reviews due to token limits.*")
 
         st.divider()
 
