@@ -724,46 +724,96 @@ with tab2:
 
 with tab3:
 
-
-
     st.header("⭐ Customer Review Analysis")
 
-
-
-    rating_dist = (
-
-        reviews_df['star_rating']
-
-        .value_counts()
-
-        .sort_index(ascending=False)
-
+    # Flavor selector
+    available_flavors = sorted(reviews_df['flavor'].dropna().unique().tolist())
+    selected_flavor = st.selectbox(
+        "Select a Flavor",
+        options=["All Flavors"] + available_flavors,
+        index=0,
+        help="Choose a specific flavor to analyze, or leave as 'All Flavors' to see combined data across all flavors.",
     )
 
-
-
-    fig = go.Figure(data=[go.Bar(
-
-        x=[f"{r}★" for r in rating_dist.index],
-
-        y=rating_dist.values
-
-    )])
-
-    fig.update_layout(
-        title_text="Review Rating Distribution",
-        title_x=0.5,
-        xaxis_title="Star Rating",
-        yaxis_title="Number of Reviews"
+    flavor_df = (
+        reviews_df if selected_flavor == "All Flavors"
+        else reviews_df[reviews_df['flavor'] == selected_flavor]
     )
 
-    st.plotly_chart(
+    if flavor_df.empty:
+        st.warning("No reviews found for the selected filters.")
+    else:
+        total_reviews = len(flavor_df)
+        avg_rating = flavor_df['star_rating'].mean()
+        pct_positive = (flavor_df['star_rating'] >= 4).sum() / total_reviews * 100
+        pct_negative = (flavor_df['star_rating'] <= 2).sum() / total_reviews * 100
 
-        fig,
+        # ── Summary stats ──────────────────────────────────────────────────
+        st.subheader("Reviews Summary")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Reviews", f"{total_reviews:,}")
+        c2.metric("Avg Star Rating", f"{avg_rating:.2f} / 5")
+        c3.metric("Positive (4-5 ★)", f"{pct_positive:.1f}%")
+        c4.metric("Negative (1-2 ★)", f"{pct_negative:.1f}%")
 
-        use_container_width=True
+        st.divider()
 
-    )
+        # ── Average star rating visual ─────────────────────────────────────
+        st.subheader("Average Star Rating")
+        filled = round(avg_rating)
+        stars_display = "★" * filled + "☆" * (5 - filled)
+        st.markdown(
+            f"<h2 style='color:#f5a623; margin-top:0;'>{stars_display} &nbsp; {avg_rating:.2f} / 5</h2>",
+            unsafe_allow_html=True,
+        )
+
+        st.divider()
+
+        # ── Most positive & most negative reviews ─────────────────────────
+        positive_reviews = (
+            flavor_df[flavor_df['star_rating'] >= 4]
+            .sort_values('helpful_votes', ascending=False)
+            .head(2)
+        )
+        negative_reviews = (
+            flavor_df[flavor_df['star_rating'] <= 2]
+            .sort_values('helpful_votes', ascending=False)
+            .head(2)
+        )
+
+        col_pos, col_neg = st.columns(2)
+
+        with col_pos:
+            st.subheader("👍 Most Positive Reviews")
+            if positive_reviews.empty:
+                st.info("No positive reviews for this selection.")
+            else:
+                for _, row in positive_reviews.iterrows():
+                    rating = int(row['star_rating'])
+                    stars = "★" * rating + "☆" * (5 - rating)
+                    flavor_tag = f" · {row['flavor']}" if selected_flavor == "All Flavors" else ""
+                    with st.container(border=True):
+                        st.markdown(f"**{stars}**{flavor_tag}")
+                        st.markdown(f"*{row['review_text']}*")
+                        st.caption(
+                            f"{int(row['helpful_votes'])} helpful votes · {row['platform']} · {row['review_date']}"
+                        )
+
+        with col_neg:
+            st.subheader("👎 Most Negative Reviews")
+            if negative_reviews.empty:
+                st.info("No negative reviews for this selection.")
+            else:
+                for _, row in negative_reviews.iterrows():
+                    rating = int(row['star_rating'])
+                    stars = "★" * rating + "☆" * (5 - rating)
+                    flavor_tag = f" · {row['flavor']}" if selected_flavor == "All Flavors" else ""
+                    with st.container(border=True):
+                        st.markdown(f"**{stars}**{flavor_tag}")
+                        st.markdown(f"*{row['review_text']}*")
+                        st.caption(
+                            f"{int(row['helpful_votes'])} helpful votes · {row['platform']} · {row['review_date']}"
+                        )
 
 
 
