@@ -13,16 +13,18 @@ A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers 
 └─────────────────────────────┬───────────────────────────────────┘
                               │ user question
                               ▼
-            ┌─────────────────────────────────┐
-            │         LLM Query Parser        │  utils/query_parser.py
-            │                                 │
-            │  • Relevance check              │  → "I don't know" if off-topic
-            │  • Comparison detection         │  → single vs. two-period branch
-            │  • Date range extraction        │  → ISO dates from natural language
-            │                                 │
-            │  (one LLM call — replaces       │
-            │   regex + separate relevance)   │
-            └──────────────┬──────────────────┘
+        ╔═════════════════════════════════════╗
+        ║  PHASE 0 — Query Parser Agent       ║  agents/query_parser_agent.py
+        ║                                     ║  tasks/query_parser_task.py
+        ║  • Relevance check                  ║  → "I don't know" if off-topic
+        ║  • Comparison detection             ║  → single vs. two-period branch
+        ║  • Date range extraction            ║  → ISO dates from natural language
+        ║                                     ║
+        ║  CrewAI Agent · output_pydantic     ║
+        ║  ParsedQuery · date clamping        ║
+        ╚══════════════════╤══════════════════╝
+                           │  orchestrated by crew.run_query_parser()
+                           ▼
                            │
             ┌──────────────┴──────────────┐
             │                             │
@@ -77,17 +79,23 @@ A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers 
 
 ---
 
-## Query Parser — One LLM Call Does Everything
+## Phase 0 — Query Parser Agent
 
-The entry point for every Ask AI query is a **single LLM call** in `utils/query_parser.py` that replaces three separate operations that previously existed:
+Every Ask AI query passes through **Phase 0** before any specialist agent runs. This is a first-class **CrewAI agent** (not a utility function) that replaces three operations that previously existed as separate code paths:
 
-| Old (removed) | New |
-|---------------|-----|
-| Separate `is_question_relevant()` — LLM call #1 | Combined into `parse_query()` |
-| Regex-based comparison detection (`is_comparison_query`) | Combined into `parse_query()` |
-| Regex-based date extraction (`parse_timeframe`, 500+ lines) | Combined into `parse_query()` |
+| Old (removed) | New (Phase 0) |
+|---------------|---------------|
+| Separate `is_question_relevant()` — LLM call #1 | Combined into Query Parser Agent |
+| Regex-based comparison detection (`is_comparison_query`) | Combined into Query Parser Agent |
+| Regex-based date extraction (`parse_timeframe`, 500+ lines) | Combined into Query Parser Agent |
 
-The LLM receives: today's date, the available data range, and the user's question. It returns a validated `ParsedQuery` Pydantic object:
+**Files:**
+- `agents/query_parser_agent.py` — agent definition (role, goal, backstory)
+- `tasks/query_parser_task.py` — full task prompt with today's date + available range injected; `output_pydantic=ParsedQuery`
+- `utils/query_parser.py` — `ParsedQuery` Pydantic model + helper functions (`_to_date`, `_clamp`, `_build_result`)
+- `crew.py → run_query_parser()` — Phase 0 orchestration: creates mini-crew, runs it, extracts result
+
+The agent receives today's date, the available data range, and the user's question. It returns a validated `ParsedQuery` Pydantic object:
 
 ```python
 class ParsedQuery(BaseModel):
@@ -98,15 +106,33 @@ class ParsedQuery(BaseModel):
     period_end:    Optional[str] # ISO date
     period_a_*:    ...           # baseline period (comparison only)
     period_b_*:    ...           # subject period (comparison only)
-    reason:        str           # one-sentence explanation for logging
+    reason:        str           # one-sentence explanation (visible in Phase 0 logs)
 ```
 
-Python then clamps extracted dates to the available data range and builds the dict that `app.py` consumes. If the LLM fails to return valid JSON, a safe fallback (relevant, no date filter) is used.
+Python then clamps extracted dates to the available data range and builds the routing dict that `app.py` consumes. If Pydantic parsing fails, a safe fallback (relevant, no date filter) is applied.
+
+**Phase 0 console output example:**
+```
+======================================================================
+🧠 PHASE 0 — QUERY PARSER AGENT
+   Question  : Compare brand health Dec 2025 vs Jan 2026
+   Data range: 2025-01-01 → 2026-06-05
+======================================================================
+ [CrewAI agent logs appear here...]
+✅ PHASE 0 COMPLETE — Query parsed successfully
+   Relevant   : True
+   Comparison : True
+   Period A   : December 2025  (2025-12-01 → 2025-12-31, has_data=True)
+   Period B   : January 2026   (2026-01-01 → 2026-01-31, has_data=True)
+   Reason     : Explicit month-vs-month comparison detected.
+======================================================================
+```
 
 **Why this is better than regex:**
 - Handles any natural language — "the holiday season", "past couple months", "since Q4'25", abbreviated months, numeric formats (2025-12), dotted abbreviations (Dec.) — without code changes
 - No edge case maintenance — adding a new date format requires zero code
 - Relevance and timeframe are evaluated together with full semantic context
+- Logs are now visible alongside all other agent logs in the console
 
 ---
 
@@ -190,13 +216,14 @@ When a comparison is detected, both periods run through the full pipeline in par
 ```
 brand_monitor_pipeline/
 ├── app.py                  # Streamlit entry point
-├── crew.py                 # Orchestration: specialist phase + feedback loop + exit logic
+├── crew.py                 # Orchestration: Phase 0 (query parser) + Phase 1 (specialists) + Phase 2 (feedback loop)
 ├── requirements.txt        # Pinned production dependencies
 ├── requirements-dev.txt    # Dev/test dependencies
 ├── Makefile                # Common commands (run, test, lint, format)
 ├── .env.example            # Environment variable template
 │
-├── agents/                 # One file per specialist agent
+├── agents/                 # One file per agent (Phase 0 + 4 specialists + 2 synthesis)
+│   ├── query_parser_agent.py         # Phase 0 — relevance + comparison + date extraction
 │   ├── social_listening_agent.py
 │   ├── search_trend_agent.py
 │   ├── review_theme_agent.py
@@ -205,6 +232,7 @@ brand_monitor_pipeline/
 │   └── critic_qa_agent.py
 │
 ├── tasks/                  # One file per agent task (prompts + data prep)
+│   ├── query_parser_task.py          # Phase 0 — full prompt + output_pydantic=ParsedQuery
 │   ├── social_listening_task.py
 │   ├── search_trend_task.py
 │   ├── review_theme_task.py
@@ -223,7 +251,7 @@ brand_monitor_pipeline/
 │   ├── critic_models.py              # DimensionScores, CriticQAOutput (Pydantic)
 │   ├── evidence_card.py              # EvidenceCard dataclass for agent outputs
 │   ├── feedback_loop.py              # FeedbackLoopResult, extract_scores_from_task_output
-│   ├── query_parser.py               # LLM query parser: relevance + comparison + dates
+│   ├── query_parser.py               # ParsedQuery Pydantic model + _to_date/_clamp/_build_result helpers
 │   └── timeframe_utils.py            # Date utilities only (get_data_availability, etc.)
 │
 ├── data/                   # CSV data files (gitignored if sensitive)

@@ -160,6 +160,12 @@ def run_query_parser(
     if llm is None:
         llm = build_azure_openai_client()
 
+    print("\n" + "=" * 70)
+    print("🧠 PHASE 0 — QUERY PARSER AGENT")
+    print(f"   Question  : {question}")
+    print(f"   Data range: {avail_start.isoformat()} → {avail_end.isoformat()}")
+    print("=" * 70)
+
     agent = create_query_parser_agent(llm)
     task  = create_query_parser_task(agent, question, avail_start, avail_end)
 
@@ -167,7 +173,7 @@ def run_query_parser(
         agents=[agent],
         tasks=[task],
         process=Process.sequential,
-        verbose=False,
+        verbose=True,
     )
     result = crew.kickoff()
 
@@ -184,7 +190,29 @@ def run_query_parser(
             reason="pydantic parsing failed — safe fallback applied",
         )
 
-    return _build_result(parsed_obj, avail_start, avail_end)
+    result_dict = _build_result(parsed_obj, avail_start, avail_end)
+
+    print(f"\n✅ PHASE 0 COMPLETE — Query parsed successfully")
+    print(f"   Relevant   : {result_dict['is_relevant']}")
+    print(f"   Comparison : {result_dict['is_comparison']}")
+    if result_dict['is_comparison']:
+        pa = result_dict.get('period_a', {})
+        pb = result_dict.get('period_b', {})
+        print(f"   Period A   : {pa.get('label')}  "
+              f"({pa.get('effective_start')} → {pa.get('effective_end')}, "
+              f"has_data={pa.get('has_data')})")
+        print(f"   Period B   : {pb.get('label')}  "
+              f"({pb.get('effective_start')} → {pb.get('effective_end')}, "
+              f"has_data={pb.get('has_data')})")
+    else:
+        p = result_dict.get('period', {})
+        print(f"   Period     : {p.get('label')}  "
+              f"({p.get('effective_start')} → {p.get('effective_end')}, "
+              f"has_data={p.get('has_data')})")
+    print(f"   Reason     : {result_dict.get('reason', '')}")
+    print("=" * 70 + "\n")
+
+    return result_dict
 
 
 def _should_exit_loop(
