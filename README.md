@@ -9,7 +9,7 @@ A multi-agent AI pipeline built with **CrewAI** and **Streamlit** that delivers 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Streamlit App                           │
-│     Dashboards · KPI Cards · Ask AI · Agent Observability       │
+│  Dashboards · KPI Cards · Ask AI · Human Review · Observability  │
 └─────────────────────────────┬───────────────────────────────────┘
                               │ user question
                               ▼
@@ -183,6 +183,37 @@ def _should_exit_loop(score, dimension_scores, threshold):
 
 ---
 
+## Ask AI — Human Review & Report Export
+
+After the pipeline returns an answer, every response in the **Ask AI** tab includes a **Human Review** section that allows an analyst to read, edit, and export the AI-generated report before it is used anywhere.
+
+### Human Review (HITL)
+
+An editable text area pre-populated with the AI answer lets reviewers correct factual errors, rewrite phrasing, or add analyst commentary. Changes are reflected instantly in the export outputs.
+
+### Action buttons
+
+Three equal-width buttons sit below the editable area:
+
+| Button | What it does |
+|--------|-------------|
+| **✅ Submit Review** | Marks the review as accepted (in-session confirmation) |
+| **📄 Download as PDF** | Generates a formatted PDF from the current (edited) text and downloads it |
+| **📝 Download as Text** | Downloads a plain-text `.txt` file with a header block and the full report body |
+
+Both download buttons use the **edited** content — not the original AI output — so any reviewer changes are captured in the export.
+
+### PDF generation
+
+PDFs are built with **`fpdf2`** (pure Python, no system dependencies). The pipeline:
+
+1. `_strip_markdown(text)` — removes `##`, `**bold**`, `*italic*`, backtick code, markdown links, and horizontal rules; normalises smart quotes and em-dashes to latin-1-safe equivalents
+2. `_safe_latin1(text)` — encodes to latin-1 with `errors='replace'` so no character encoding exception can break a download
+3. `_make_pdf(question, content)` — assembles: title header, generated date, blue-tinted question block, and the stripped report body
+4. `_report_filename(question, ext)` — slugifies the question into a descriptive filename, e.g. `brand_health_how_is_lays_brand_health_20260605.pdf`
+
+---
+
 ## Comparison Queries ⚠️ Work in Progress
 
 > **Status:** Comparison query support is under active development. The LLM query parser detects and extracts both periods correctly, but the end-to-end dual pipeline and synthesis may produce inconsistent results in some cases. Use with caution and verify outputs.
@@ -279,6 +310,16 @@ pip install -r requirements.txt
 # Development (adds pytest, black, flake8)
 pip install -r requirements-dev.txt
 ```
+
+Key production dependencies:
+
+| Package | Purpose |
+|---------|---------|
+| `streamlit` | Web UI |
+| `crewai` | Agent orchestration |
+| `plotly` / `pandas` | Charts and data manipulation |
+| `fpdf2` | Pure-Python PDF generation for report downloads |
+| `openai` | Azure OpenAI LLM client |
 
 ### 3. Configure environment variables
 
